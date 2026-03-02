@@ -222,7 +222,7 @@ export function HtmlReportModal({ isOpen, onClose, onGenerate, flightCount }: Ht
                             >
                                 {/* Group header */}
                                 <div className="flex items-center justify-between px-4 py-2 bg-drone-surface border-b border-gray-700/80">
-                                    <span className="text-xs font-semibold text-gray-300">{group.name}</span>
+                                    <span className="text-xs font-semibold text-gray-300">{t(`report.${group.name}`)}</span>
                                     <div className="flex items-center gap-2 text-[10px]">
                                         <button onClick={() => setGroupAll(group.name)} className="text-sky-400 hover:text-sky-300 font-medium transition-colors">{t('report.all')}</button>
                                         <span className="text-gray-600">/</span>
@@ -251,7 +251,7 @@ export function HtmlReportModal({ isOpen, onClose, onGenerate, flightCount }: Ht
                                                 )}
                                             </div>
                                             <span className="text-xs text-gray-400 group-hover:text-white transition-colors select-none">
-                                                {field.label}
+                                                {t(`report.${field.key}`)}
                                             </span>
                                         </label>
                                     ))}
