@@ -638,5 +638,20 @@
     "alidade": "Alidade平滑",
     "stamenTerrain": "Stamen地形",
     "stamenWatercolor": "Stamen水彩"
+  },
+  "profile": {
+    "default": "默认",
+    "switchProfile": "切换配置文件",
+    "newProfile": "新建配置文件",
+    "create": "创建",
+    "cancel": "取消",
+    "delete": "删除配置文件",
+    "confirmDelete": "删除配置文件\"{{name}}\"？此配置文件中的所有飞行将被永久删除。",
+    "namePlaceholder": "配置文件名称",
+    "errorEmpty": "配置文件名称不能为空",
+    "errorReserved": "不能使用保留名称 'default'",
+    "errorTooLong": "配置文件名称过长（最多50个字符）",
+    "errorInvalidChars": "仅允许使用字母、数字、连字符和下划线",
+    "errorExists": "同名配置文件已存在"
   }
 }

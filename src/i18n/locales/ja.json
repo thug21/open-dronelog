@@ -638,5 +638,20 @@
     "alidade": "アリダードスムーズ",
     "stamenTerrain": "スタメン地形",
     "stamenWatercolor": "スタメン水彩"
+  },
+  "profile": {
+    "default": "デフォルト",
+    "switchProfile": "プロファイル切替",
+    "newProfile": "新しいプロファイル",
+    "create": "作成",
+    "cancel": "キャンセル",
+    "delete": "プロファイルを削除",
+    "confirmDelete": "プロファイル「{{name}}」を削除しますか？このプロファイルのすべてのフライトが完全に削除されます。",
+    "namePlaceholder": "プロファイル名",
+    "errorEmpty": "プロファイル名を入力してください",
+    "errorReserved": "予約名 'default' は使用できません",
+    "errorTooLong": "プロファイル名が長すぎます（最大50文字）",
+    "errorInvalidChars": "英数字、ハイフン、アンダースコアのみ使用可能",
+    "errorExists": "この名前のプロファイルは既に存在します"
   }
 }

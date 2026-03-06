@@ -639,5 +639,20 @@
     "alidade": "Alidade Smooth",
     "stamenTerrain": "Stamen Terrain",
     "stamenWatercolor": "Stamen Watercolor"
+  },
+  "profile": {
+    "default": "Default",
+    "switchProfile": "Switch profile",
+    "newProfile": "New Profile",
+    "create": "Create",
+    "cancel": "Cancel",
+    "delete": "Delete profile",
+    "confirmDelete": "Delete profile \"{{name}}\"? All flights in this profile will be permanently removed.",
+    "namePlaceholder": "Profile name",
+    "errorEmpty": "Profile name cannot be empty",
+    "errorReserved": "Cannot use reserved name 'default'",
+    "errorTooLong": "Profile name too long (max 50 characters)",
+    "errorInvalidChars": "Only letters, numbers, hyphens, and underscores allowed",
+    "errorExists": "A profile with this name already exists"
   }
 }

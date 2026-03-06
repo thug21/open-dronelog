@@ -3,11 +3,12 @@
 //! This module mirrors all 11 Tauri commands as HTTP endpoints,
 //! allowing the frontend to communicate via fetch() instead of invoke().
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, Path, Query, State as AxumState},
+    extract::{DefaultBodyLimit, FromRequestParts, Multipart, Path, Query, State as AxumState},
     http::StatusCode,
     routing::{delete, get, post, put},
     Json, Router,
@@ -17,19 +18,117 @@ use tower_http::cors::{Any, CorsLayer};
 use tokio_cron_scheduler::{Job, JobScheduler};
 
 use crate::api::DjiApi;
-use crate::database::Database;
+use crate::database::{self, Database};
 use crate::models::{FlightDataResponse, FlightTag, ImportResult, OverviewStats, TelemetryData};
 use crate::parser::LogParser;
 
-/// Shared application state for Axum handlers
+/// Shared application state for Axum handlers.
+///
+/// Maintains a connection pool keyed by profile name so that multiple
+/// browser tabs / users can work on different profiles concurrently.
 #[derive(Clone)]
 pub struct WebAppState {
+    databases: Arc<std::sync::RwLock<HashMap<String, Arc<Database>>>>,
+    pub data_dir: PathBuf,
+}
+
+impl WebAppState {
+    /// Get (or lazily open) a database connection for a given profile.
+    pub fn db_for_profile(&self, profile: &str) -> Result<Arc<Database>, String> {
+        // Fast path — already cached
+        {
+            let dbs = self.databases.read().unwrap();
+            if let Some(db) = dbs.get(profile) {
+                return Ok(db.clone());
+            }
+        }
+        // Slow path — open the database and cache it
+        let new_db = Database::new(self.data_dir.clone(), profile)
+            .map_err(|e| format!("Failed to open profile '{}': {}", profile, e))?;
+        let db = Arc::new(new_db);
+        let mut dbs = self.databases.write().unwrap();
+        // Double-check: another thread might have opened it in the meantime
+        if let Some(existing) = dbs.get(profile) {
+            return Ok(existing.clone());
+        }
+        dbs.insert(profile.to_string(), db.clone());
+        Ok(db)
+    }
+
+    /// Remove a cached connection (used after profile deletion).
+    pub fn evict_profile(&self, profile: &str) {
+        self.databases.write().unwrap().remove(profile);
+    }
+
+    /// Convenience: get the *server-default* active profile's DB.
+    /// Used only by non-request code (e.g. scheduled sync).
+    pub fn db(&self) -> Arc<Database> {
+        let profile = database::get_active_profile(&self.data_dir);
+        self.db_for_profile(&profile)
+            .expect("Failed to open active profile database")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Custom Axum extractor — resolves the caller's profile DB per-request
+// by reading the `X-Profile` header (falls back to the server default).
+// ---------------------------------------------------------------------------
+
+/// Wraps an `Arc<Database>` resolved from the request's `X-Profile` header,
+/// along with the resolved profile name and data directory.
+pub struct ProfileDb {
     pub db: Arc<Database>,
+    pub profile: String,
+    pub data_dir: PathBuf,
+}
+
+impl ProfileDb {
+    /// Return the per-profile config file path.
+    pub fn config_path(&self) -> PathBuf {
+        database::config_path_for_profile(&self.data_dir, &self.profile)
+    }
+
+    /// Return the default uploaded-files folder for this profile.
+    pub fn default_upload_folder(&self) -> PathBuf {
+        database::default_upload_folder(&self.data_dir, &self.profile)
+    }
+
+    /// Return the sync folder for this profile (env-var based, profile-aware).
+    pub fn sync_path(&self) -> Option<PathBuf> {
+        database::sync_path_for_profile(&self.profile)
+    }
+}
+
+#[axum::async_trait]
+impl FromRequestParts<WebAppState> for ProfileDb {
+    type Rejection = (StatusCode, Json<ErrorResponse>);
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &WebAppState,
+    ) -> Result<Self, Self::Rejection> {
+        let profile = parts
+            .headers
+            .get("X-Profile")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| database::get_active_profile(&state.data_dir));
+
+        let db = state
+            .db_for_profile(&profile)
+            .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+        Ok(ProfileDb {
+            db,
+            profile,
+            data_dir: state.data_dir.clone(),
+        })
+    }
 }
 
 /// Standard error response
 #[derive(Serialize)]
-struct ErrorResponse {
+pub struct ErrorResponse {
     error: String,
 }
 
@@ -115,7 +214,8 @@ fn copy_uploaded_file_web(src_path: &std::path::PathBuf, dest_folder: &std::path
 
 /// POST /api/import — Upload and import a DJI flight log file
 async fn import_log(
-    AxumState(state): AxumState<WebAppState>,
+    AxumState(_state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     mut multipart: Multipart,
 ) -> Result<Json<ImportResult>, (StatusCode, Json<ErrorResponse>)> {
     // Read the uploaded file from multipart form data
@@ -147,7 +247,7 @@ async fn import_log(
     log::info!("Importing uploaded log file: {}", file_name);
 
     // Check if we should keep uploaded files (via env var or config) - check early for all code paths
-    let upload_config_path = state.db.data_dir.join("config.json");
+    let upload_config_path = pdb.config_path();
     let upload_config: serde_json::Value = if upload_config_path.exists() {
         std::fs::read_to_string(&upload_config_path)
             .ok()
@@ -161,7 +261,7 @@ async fn import_log(
         .unwrap_or_else(|_| {
             upload_config.get("keep_uploaded_files").and_then(|v| v.as_bool()).unwrap_or(false)
         });
-    let default_upload_folder = state.db.data_dir.join("uploaded");
+    let default_upload_folder = pdb.default_upload_folder();
     let upload_folder = upload_config.get("uploaded_files_path")
         .and_then(|v| v.as_str())
         .map(|s| std::path::PathBuf::from(s))
@@ -176,7 +276,7 @@ async fn import_log(
         }
     };
 
-    let parser = LogParser::new(&state.db);
+    let parser = LogParser::new(&pdb.db);
 
     let parse_result = match parser.parse_log(&temp_path).await {
         Ok(result) => result,
@@ -215,7 +315,7 @@ async fn import_log(
     let _ = std::fs::remove_file(&temp_path);
 
     // Check for duplicate flight based on signature (drone_serial + battery_serial + start_time)
-    if let Some(matching_flight) = state.db.is_duplicate_flight(
+    if let Some(matching_flight) = pdb.db.is_duplicate_flight(
         parse_result.metadata.drone_serial.as_deref(),
         parse_result.metadata.battery_serial.as_deref(),
         parse_result.metadata.start_time,
@@ -231,17 +331,16 @@ async fn import_log(
     }
 
     // Insert flight metadata
-    let flight_id = state
-        .db
+    let flight_id = pdb.db
         .insert_flight(&parse_result.metadata)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to insert flight: {}", e)))?;
 
     // Bulk insert telemetry data
-    let point_count = match state.db.bulk_insert_telemetry(flight_id, &parse_result.points) {
+    let point_count = match pdb.db.bulk_insert_telemetry(flight_id, &parse_result.points) {
         Ok(count) => count,
         Err(e) => {
             log::error!("Failed to insert telemetry for flight {}: {}. Cleaning up.", flight_id, e);
-            if let Err(cleanup_err) = state.db.delete_flight(flight_id) {
+            if let Err(cleanup_err) = pdb.db.delete_flight(flight_id) {
                 log::error!("Failed to clean up flight {}: {}", flight_id, cleanup_err);
             }
             return Ok(Json(ImportResult {
@@ -255,7 +354,7 @@ async fn import_log(
     };
 
     // Insert smart tags if the feature is enabled
-    let config_path = state.db.data_dir.join("config.json");
+    let config_path = pdb.config_path();
     let config: serde_json::Value = if config_path.exists() {
         std::fs::read_to_string(&config_path)
             .ok()
@@ -276,35 +375,42 @@ async fn import_log(
         } else {
             parse_result.tags.clone()
         };
-        if let Err(e) = state.db.insert_flight_tags(flight_id, &tags) {
+        if let Err(e) = pdb.db.insert_flight_tags(flight_id, &tags) {
             log::warn!("Failed to insert tags for flight {}: {}", flight_id, e);
         }
     }
 
     // Insert manual tags from re-imported CSV exports (always inserted regardless of smart_tags_enabled)
     for manual_tag in &parse_result.manual_tags {
-        if let Err(e) = state.db.add_flight_tag(flight_id, manual_tag) {
+        if let Err(e) = pdb.db.add_flight_tag(flight_id, manual_tag) {
             log::warn!("Failed to insert manual tag '{}' for flight {}: {}", manual_tag, flight_id, e);
+        }
+    }
+
+    // Auto-tag with profile name for non-default profiles
+    if pdb.profile != "default" {
+        if let Err(e) = pdb.db.add_flight_tag(flight_id, &pdb.profile) {
+            log::warn!("Failed to insert profile tag '{}' for flight {}: {}", pdb.profile, flight_id, e);
         }
     }
 
     // Insert notes from re-imported CSV exports
     if let Some(ref notes) = parse_result.notes {
-        if let Err(e) = state.db.update_flight_notes(flight_id, Some(notes.as_str())) {
+        if let Err(e) = pdb.db.update_flight_notes(flight_id, Some(notes.as_str())) {
             log::warn!("Failed to insert notes for flight {}: {}", flight_id, e);
         }
     }
 
     // Apply color from re-imported CSV exports
     if let Some(ref color) = parse_result.color {
-        if let Err(e) = state.db.update_flight_color(flight_id, color) {
+        if let Err(e) = pdb.db.update_flight_color(flight_id, color) {
             log::warn!("Failed to set color for flight {}: {}", flight_id, e);
         }
     }
 
     // Insert app messages (tips and warnings) from DJI logs
     if !parse_result.messages.is_empty() {
-        if let Err(e) = state.db.insert_flight_messages(flight_id, &parse_result.messages) {
+        if let Err(e) = pdb.db.insert_flight_messages(flight_id, &parse_result.messages) {
             log::warn!("Failed to insert messages for flight {}: {}", flight_id, e);
         }
     }
@@ -343,7 +449,7 @@ struct CreateManualFlightPayload {
 
 /// POST /api/manual_flight — Create a manual flight entry without log file
 async fn create_manual_flight(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Json(payload): Json<CreateManualFlightPayload>,
 ) -> Result<Json<ImportResult>, (StatusCode, Json<ErrorResponse>)> {
     use chrono::DateTime;
@@ -377,7 +483,7 @@ async fn create_manual_flight(
         .cloned()
         .unwrap_or_else(|| payload.aircraft_name.clone());
     
-    let flight_id = state.db.generate_flight_id();
+    let flight_id = pdb.db.generate_flight_id();
     let metadata = crate::models::FlightMetadata {
         id: flight_id,
         file_name: format!("manual_entry_{}.log", flight_id),
@@ -401,16 +507,14 @@ async fn create_manual_flight(
     };
 
     // Insert flight
-    state
-        .db
+    pdb.db
         .insert_flight(&metadata)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to insert flight: {}", e)))?;
 
     // Update notes if provided
     if let Some(notes_text) = &payload.notes {
         if !notes_text.trim().is_empty() {
-            state
-                .db
+            pdb.db
                 .update_flight_notes(flight_id, Some(notes_text))
                 .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to add notes: {}", e)))?;
         }
@@ -418,7 +522,7 @@ async fn create_manual_flight(
 
     // Add "Manual Entry" tag
     let tags = vec!["Manual Entry".to_string()];
-    if let Err(e) = state.db.insert_flight_tags(flight_id, &tags) {
+    if let Err(e) = pdb.db.insert_flight_tags(flight_id, &tags) {
         log::warn!("Failed to add tags: {}", e);
     }
 
@@ -439,7 +543,7 @@ async fn create_manual_flight(
     
     let smart_tags = crate::parser::LogParser::generate_smart_tags(&metadata, &stats);
     if !smart_tags.is_empty() {
-        if let Err(e) = state.db.insert_flight_tags(flight_id, &smart_tags) {
+        if let Err(e) = pdb.db.insert_flight_tags(flight_id, &smart_tags) {
             log::warn!("Failed to add smart tags: {}", e);
         }
     }
@@ -457,10 +561,9 @@ async fn create_manual_flight(
 
 /// GET /api/flights — List all flights
 async fn get_flights(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Result<Json<Vec<crate::models::Flight>>, (StatusCode, Json<ErrorResponse>)> {
-    let flights = state
-        .db
+    let flights = pdb.db
         .get_all_flights()
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get flights: {}", e)))?;
     Ok(Json(flights))
@@ -474,18 +577,16 @@ struct FlightDataQuery {
 }
 
 async fn get_flight_data(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Query(params): Query<FlightDataQuery>,
 ) -> Result<Json<FlightDataResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let flight = state
-        .db
+    let flight = pdb.db
         .get_flight_by_id(params.flight_id)
         .map_err(|e| err_response(StatusCode::NOT_FOUND, format!("Flight not found: {}", e)))?;
 
     let known_point_count = flight.point_count.map(|c| c as i64);
 
-    let telemetry_records = state
-        .db
+    let telemetry_records = pdb.db
         .get_flight_telemetry(params.flight_id, params.max_points, known_point_count)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get telemetry: {}", e)))?;
 
@@ -493,8 +594,7 @@ async fn get_flight_data(
     let track = telemetry.extract_track(2000);
 
     // Get flight messages (tips and warnings)
-    let messages = state
-        .db
+    let messages = pdb.db
         .get_flight_messages(params.flight_id)
         .unwrap_or_else(|e| {
             log::warn!("Failed to get messages for flight {}: {}", params.flight_id, e);
@@ -511,10 +611,9 @@ async fn get_flight_data(
 
 /// GET /api/overview — Get overview statistics
 async fn get_overview_stats(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Result<Json<OverviewStats>, (StatusCode, Json<ErrorResponse>)> {
-    let stats = state
-        .db
+    let stats = pdb.db
         .get_overview_stats()
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get overview stats: {}", e)))?;
     Ok(Json(stats))
@@ -527,12 +626,11 @@ struct DeleteFlightQuery {
 }
 
 async fn delete_flight(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Query(params): Query<DeleteFlightQuery>,
 ) -> Result<Json<bool>, (StatusCode, Json<ErrorResponse>)> {
     log::info!("Deleting flight: {}", params.flight_id);
-    state
-        .db
+    pdb.db
         .delete_flight(params.flight_id)
         .map(|_| Json(true))
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to delete flight: {}", e)))
@@ -540,11 +638,10 @@ async fn delete_flight(
 
 /// DELETE /api/flights — Delete all flights
 async fn delete_all_flights(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Result<Json<bool>, (StatusCode, Json<ErrorResponse>)> {
     log::warn!("Deleting ALL flights and telemetry");
-    state
-        .db
+    pdb.db
         .delete_all_flights()
         .map(|_| Json(true))
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to delete all flights: {}", e)))
@@ -552,11 +649,10 @@ async fn delete_all_flights(
 
 /// POST /api/flights/deduplicate — Remove duplicate flights
 async fn deduplicate_flights(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Result<Json<usize>, (StatusCode, Json<ErrorResponse>)> {
     log::info!("Running flight deduplication");
-    state
-        .db
+    pdb.db
         .deduplicate_flights()
         .map(Json)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to deduplicate flights: {}", e)))
@@ -570,7 +666,7 @@ struct UpdateNamePayload {
 }
 
 async fn update_flight_name(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Json(payload): Json<UpdateNamePayload>,
 ) -> Result<Json<bool>, (StatusCode, Json<ErrorResponse>)> {
     let trimmed = payload.display_name.trim();
@@ -580,8 +676,7 @@ async fn update_flight_name(
 
     log::info!("Renaming flight {} to '{}'", payload.flight_id, trimmed);
 
-    state
-        .db
+    pdb.db
         .update_flight_name(payload.flight_id, trimmed)
         .map(|_| Json(true))
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to update flight name: {}", e)))
@@ -594,7 +689,7 @@ struct UpdateNotesPayload {
 }
 
 async fn update_flight_notes(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Json(payload): Json<UpdateNotesPayload>,
 ) -> Result<Json<bool>, (StatusCode, Json<ErrorResponse>)> {
     let notes_ref = payload.notes.as_ref().map(|s| {
@@ -604,8 +699,7 @@ async fn update_flight_notes(
 
     log::info!("Updating notes for flight {}", payload.flight_id);
 
-    state
-        .db
+    pdb.db
         .update_flight_notes(payload.flight_id, notes_ref)
         .map(|_| Json(true))
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to update flight notes: {}", e)))
@@ -619,7 +713,7 @@ struct UpdateColorPayload {
 }
 
 async fn update_flight_color(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Json(payload): Json<UpdateColorPayload>,
 ) -> Result<Json<bool>, (StatusCode, Json<ErrorResponse>)> {
     let trimmed = payload.color.trim();
@@ -629,8 +723,7 @@ async fn update_flight_color(
 
     log::info!("Updating color for flight {} to '{}'", payload.flight_id, trimmed);
 
-    state
-        .db
+    pdb.db
         .update_flight_color(payload.flight_id, trimmed)
         .map(|_| Json(true))
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to update flight color: {}", e)))
@@ -640,7 +733,7 @@ async fn update_flight_color(
 async fn has_api_key(
     AxumState(state): AxumState<WebAppState>,
 ) -> Json<bool> {
-    let api = DjiApi::with_app_data_dir(state.db.data_dir.clone());
+    let api = DjiApi::with_app_data_dir(state.data_dir.clone());
     Json(api.has_api_key())
 }
 
@@ -648,7 +741,7 @@ async fn has_api_key(
 async fn get_api_key_type(
     AxumState(state): AxumState<WebAppState>,
 ) -> Json<String> {
-    let api = DjiApi::with_app_data_dir(state.db.data_dir.clone());
+    let api = DjiApi::with_app_data_dir(state.data_dir.clone());
     Json(api.get_api_key_type())
 }
 
@@ -662,7 +755,7 @@ async fn set_api_key(
     AxumState(state): AxumState<WebAppState>,
     Json(payload): Json<SetApiKeyPayload>,
 ) -> Result<Json<bool>, (StatusCode, Json<ErrorResponse>)> {
-    let api = DjiApi::with_app_data_dir(state.db.data_dir.clone());
+    let api = DjiApi::with_app_data_dir(state.data_dir.clone());
     api.save_api_key(&payload.api_key)
         .map(|_| Json(true))
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to save API key: {}", e)))
@@ -672,7 +765,7 @@ async fn set_api_key(
 async fn remove_api_key(
     AxumState(state): AxumState<WebAppState>,
 ) -> Result<Json<bool>, (StatusCode, Json<ErrorResponse>)> {
-    let api = DjiApi::with_app_data_dir(state.db.data_dir.clone());
+    let api = DjiApi::with_app_data_dir(state.data_dir.clone());
     api.remove_api_key()
         .map(|_| Json(true))
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to remove API key: {}", e)))
@@ -682,7 +775,7 @@ async fn remove_api_key(
 async fn get_app_data_dir(
     AxumState(state): AxumState<WebAppState>,
 ) -> Json<String> {
-    Json(state.db.data_dir.to_string_lossy().to_string())
+    Json(state.data_dir.to_string_lossy().to_string())
 }
 
 /// GET /api/app_log_dir — Get the app log directory path
@@ -690,20 +783,19 @@ async fn get_app_log_dir(
     AxumState(state): AxumState<WebAppState>,
 ) -> Json<String> {
     // In web mode, logs go to stdout/the data dir
-    Json(state.db.data_dir.to_string_lossy().to_string())
+    Json(state.data_dir.to_string_lossy().to_string())
 }
 
 /// GET /api/backup — Download a compressed database backup
 async fn export_backup(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     use axum::body::Body;
     use axum::response::IntoResponse;
 
     let temp_path = std::env::temp_dir().join(format!("dji-logbook-dl-{}.db.backup", uuid::Uuid::new_v4()));
 
-    state
-        .db
+    pdb.db
         .export_backup(&temp_path)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Backup failed: {}", e)))?;
 
@@ -728,7 +820,8 @@ async fn export_backup(
 
 /// POST /api/backup/restore — Upload and restore a backup file
 async fn import_backup(
-    AxumState(state): AxumState<WebAppState>,
+    AxumState(_state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     mut multipart: Multipart,
 ) -> Result<Json<String>, (StatusCode, Json<ErrorResponse>)> {
     let field = multipart
@@ -746,8 +839,7 @@ async fn import_backup(
     std::fs::write(&temp_path, &data)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write temp file: {}", e)))?;
 
-    let msg = state
-        .db
+    let msg = pdb.db
         .import_backup(&temp_path)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Restore failed: {}", e)))?;
 
@@ -768,15 +860,13 @@ struct AddTagPayload {
 }
 
 async fn add_flight_tag(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Json(payload): Json<AddTagPayload>,
 ) -> Result<Json<Vec<FlightTag>>, (StatusCode, Json<ErrorResponse>)> {
-    state
-        .db
+    pdb.db
         .add_flight_tag(payload.flight_id, &payload.tag)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to add tag: {}", e)))?;
-    state
-        .db
+    pdb.db
         .get_flight_tags(payload.flight_id)
         .map(Json)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get tags: {}", e)))
@@ -790,15 +880,13 @@ struct RemoveTagPayload {
 }
 
 async fn remove_flight_tag(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Json(payload): Json<RemoveTagPayload>,
 ) -> Result<Json<Vec<FlightTag>>, (StatusCode, Json<ErrorResponse>)> {
-    state
-        .db
+    pdb.db
         .remove_flight_tag(payload.flight_id, &payload.tag)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to remove tag: {}", e)))?;
-    state
-        .db
+    pdb.db
         .get_flight_tags(payload.flight_id)
         .map(Json)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get tags: {}", e)))
@@ -806,10 +894,9 @@ async fn remove_flight_tag(
 
 /// GET /api/tags — Get all unique tags
 async fn get_all_tags(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Result<Json<Vec<String>>, (StatusCode, Json<ErrorResponse>)> {
-    state
-        .db
+    pdb.db
         .get_all_unique_tags()
         .map(Json)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get tags: {}", e)))
@@ -817,11 +904,10 @@ async fn get_all_tags(
 
 /// POST /api/tags/remove_auto — Remove all auto-generated tags from all flights
 async fn remove_all_auto_tags(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Result<Json<usize>, (StatusCode, Json<ErrorResponse>)> {
     log::info!("Removing all auto-generated tags");
-    state
-        .db
+    pdb.db
         .remove_all_auto_tags()
         .map(Json)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to remove auto tags: {}", e)))
@@ -829,9 +915,9 @@ async fn remove_all_auto_tags(
 
 /// GET /api/settings/smart_tags — Check if smart tags are enabled
 async fn get_smart_tags_enabled(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Json<bool> {
-    let config_path = state.db.data_dir.join("config.json");
+    let config_path = pdb.config_path();
     let enabled = if config_path.exists() {
         std::fs::read_to_string(&config_path)
             .ok()
@@ -851,10 +937,10 @@ struct SmartTagsPayload {
 }
 
 async fn set_smart_tags_enabled(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Json(payload): Json<SmartTagsPayload>,
 ) -> Result<Json<bool>, (StatusCode, Json<ErrorResponse>)> {
-    let config_path = state.db.data_dir.join("config.json");
+    let config_path = pdb.config_path();
     let mut config: serde_json::Value = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path).unwrap_or_default();
         serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
@@ -869,9 +955,9 @@ async fn set_smart_tags_enabled(
 
 /// GET /api/settings/enabled_tag_types — Get enabled smart tag types
 async fn get_enabled_tag_types(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Result<Json<Vec<String>>, (StatusCode, Json<ErrorResponse>)> {
-    let config_path = state.db.data_dir.join("config.json");
+    let config_path = pdb.config_path();
     if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)
             .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read config: {}", e)))?;
@@ -901,10 +987,10 @@ struct EnabledTagTypesPayload {
 
 /// POST /api/settings/enabled_tag_types — Set enabled smart tag types
 async fn set_enabled_tag_types(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Json(payload): Json<EnabledTagTypesPayload>,
 ) -> Result<Json<Vec<String>>, (StatusCode, Json<ErrorResponse>)> {
-    let config_path = state.db.data_dir.join("config.json");
+    let config_path = pdb.config_path();
     let mut config: serde_json::Value = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path).unwrap_or_default();
         serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
@@ -926,13 +1012,13 @@ struct RegenerateTagsPayload {
 
 /// POST /api/regenerate_flight_smart_tags/:id — Regenerate auto tags for a single flight
 async fn regenerate_flight_smart_tags(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Path(flight_id): Path<i64>,
     Json(payload): Json<RegenerateTagsPayload>,
 ) -> Result<Json<String>, (StatusCode, Json<ErrorResponse>)> {
     use crate::parser::{LogParser, calculate_stats_from_records};
 
-    let flight = state.db.get_flight_by_id(flight_id)
+    let flight = pdb.db.get_flight_by_id(flight_id)
         .map_err(|e| err_response(StatusCode::NOT_FOUND, format!("Failed to get flight {}: {}", flight_id, e)))?;
 
     let metadata = crate::models::FlightMetadata {
@@ -963,7 +1049,7 @@ async fn regenerate_flight_smart_tags(
         video_count: flight.video_count.unwrap_or(0),
     };
 
-    match state.db.get_flight_telemetry(flight_id, Some(50000), None) {
+    match pdb.db.get_flight_telemetry(flight_id, Some(50000), None) {
         Ok(records) if !records.is_empty() => {
             let stats = calculate_stats_from_records(&records);
             let mut tags = LogParser::generate_smart_tags(&metadata, &stats);
@@ -971,11 +1057,11 @@ async fn regenerate_flight_smart_tags(
             if let Some(ref types) = payload.enabled_tag_types {
                 tags = LogParser::filter_smart_tags(tags, types);
             }
-            state.db.replace_auto_tags(flight_id, &tags)
+            pdb.db.replace_auto_tags(flight_id, &tags)
                 .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to replace tags: {}", e)))?;
         }
         Ok(_) => {
-            let _ = state.db.replace_auto_tags(flight_id, &[]);
+            let _ = pdb.db.replace_auto_tags(flight_id, &[]);
         }
         Err(e) => {
             return Err(err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get telemetry: {}", e)));
@@ -987,14 +1073,14 @@ async fn regenerate_flight_smart_tags(
 
 /// POST /api/regenerate_smart_tags — Regenerate auto tags for all flights
 async fn regenerate_smart_tags(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Result<Json<String>, (StatusCode, Json<ErrorResponse>)> {
     use crate::parser::{LogParser, calculate_stats_from_records};
 
     log::info!("Starting smart tag regeneration for all flights");
     let start = std::time::Instant::now();
 
-    let flight_ids = state.db.get_all_flight_ids()
+    let flight_ids = pdb.db.get_all_flight_ids()
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get flight IDs: {}", e)))?;
 
     let _total = flight_ids.len();
@@ -1002,7 +1088,7 @@ async fn regenerate_smart_tags(
     let mut errors = 0usize;
 
     for flight_id in &flight_ids {
-        match state.db.get_flight_by_id(*flight_id) {
+        match pdb.db.get_flight_by_id(*flight_id) {
             Ok(flight) => {
                 let metadata = crate::models::FlightMetadata {
                     id: flight.id,
@@ -1032,17 +1118,17 @@ async fn regenerate_smart_tags(
                     video_count: flight.video_count.unwrap_or(0),
                 };
 
-                match state.db.get_flight_telemetry(*flight_id, Some(50000), None) {
+                match pdb.db.get_flight_telemetry(*flight_id, Some(50000), None) {
                     Ok(records) if !records.is_empty() => {
                         let stats = calculate_stats_from_records(&records);
                         let tags = LogParser::generate_smart_tags(&metadata, &stats);
-                        if let Err(e) = state.db.replace_auto_tags(*flight_id, &tags) {
+                        if let Err(e) = pdb.db.replace_auto_tags(*flight_id, &tags) {
                             log::warn!("Failed to replace tags for flight {}: {}", flight_id, e);
                             errors += 1;
                         }
                     }
                     Ok(_) => {
-                        let _ = state.db.replace_auto_tags(*flight_id, &[]);
+                        let _ = pdb.db.replace_auto_tags(*flight_id, &[]);
                     }
                     Err(e) => {
                         log::warn!("Failed to get telemetry for flight {}: {}", flight_id, e);
@@ -1118,11 +1204,11 @@ async fn get_sync_config() -> Json<SyncResponse> {
 
 /// GET /api/sync/files — List all log files in the sync folder
 async fn get_sync_files(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Result<Json<SyncFilesResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let sync_path = match std::env::var("SYNC_LOGS_PATH") {
-        Ok(path) => path,
-        Err(_) => {
+    let sync_dir = match pdb.sync_path() {
+        Some(p) => p,
+        None => {
             return Ok(Json(SyncFilesResponse {
                 files: vec![],
                 sync_path: None,
@@ -1131,11 +1217,19 @@ async fn get_sync_files(
         }
     };
 
-    let sync_dir = std::path::PathBuf::from(&sync_path);
+    let sync_path_str = sync_dir.to_string_lossy().to_string();
+
+    // Auto-create the profile subfolder if it doesn't exist yet
+    if !sync_dir.exists() {
+        if let Err(e) = std::fs::create_dir_all(&sync_dir) {
+            log::warn!("Failed to create sync folder {}: {}", sync_path_str, e);
+        }
+    }
+
     if !sync_dir.exists() {
         return Ok(Json(SyncFilesResponse {
             files: vec![],
-            sync_path: Some(sync_path),
+            sync_path: Some(sync_path_str),
             message: "Sync folder does not exist".to_string(),
         }));
     }
@@ -1151,7 +1245,7 @@ async fn get_sync_files(
     };
 
     // Get existing file hashes to filter out already-imported files
-    let existing_hashes: std::collections::HashSet<String> = state.db.get_all_file_hashes()
+    let existing_hashes: std::collections::HashSet<String> = pdb.db.get_all_file_hashes()
         .unwrap_or_default()
         .into_iter()
         .collect();
@@ -1181,23 +1275,24 @@ async fn get_sync_files(
 
     Ok(Json(SyncFilesResponse {
         files,
-        sync_path: Some(sync_path),
+        sync_path: Some(sync_path_str),
         message: "OK".to_string(),
     }))
 }
 
 /// POST /api/sync/file — Import a single file from the sync folder
 async fn sync_single_file(
-    AxumState(state): AxumState<WebAppState>,
+    AxumState(_state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<SyncFileResponse>, (StatusCode, Json<ErrorResponse>)> {
     let filename = payload.get("filename")
         .and_then(|v| v.as_str())
         .ok_or_else(|| err_response(StatusCode::BAD_REQUEST, "Missing filename".to_string()))?;
 
-    let sync_path = match std::env::var("SYNC_LOGS_PATH") {
-        Ok(path) => path,
-        Err(_) => {
+    let sync_dir = match pdb.sync_path() {
+        Some(p) => p,
+        None => {
             return Ok(Json(SyncFileResponse {
                 success: false,
                 message: "SYNC_LOGS_PATH not configured".to_string(),
@@ -1206,7 +1301,7 @@ async fn sync_single_file(
         }
     };
 
-    let file_path = std::path::PathBuf::from(&sync_path).join(filename);
+    let file_path = sync_dir.join(filename);
     if !file_path.exists() {
         return Ok(Json(SyncFileResponse {
             success: false,
@@ -1216,7 +1311,7 @@ async fn sync_single_file(
     }
 
     // Check smart tags setting
-    let config_path = state.db.data_dir.join("config.json");
+    let config_path = pdb.config_path();
     let config: serde_json::Value = if config_path.exists() {
         std::fs::read_to_string(&config_path)
             .ok()
@@ -1227,7 +1322,7 @@ async fn sync_single_file(
     };
     let tags_enabled = config.get("smart_tags_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
 
-    let parser = LogParser::new(&state.db);
+    let parser = LogParser::new(&pdb.db);
 
     let parse_result = match parser.parse_log(&file_path).await {
         Ok(result) => result,
@@ -1248,7 +1343,7 @@ async fn sync_single_file(
     };
 
     // Check for duplicate flight
-    if let Some(matching_flight) = state.db.is_duplicate_flight(
+    if let Some(matching_flight) = pdb.db.is_duplicate_flight(
         parse_result.metadata.drone_serial.as_deref(),
         parse_result.metadata.battery_serial.as_deref(),
         parse_result.metadata.start_time,
@@ -1261,7 +1356,7 @@ async fn sync_single_file(
     }
 
     // Insert flight
-    let flight_id = match state.db.insert_flight(&parse_result.metadata) {
+    let flight_id = match pdb.db.insert_flight(&parse_result.metadata) {
         Ok(id) => id,
         Err(e) => {
             return Ok(Json(SyncFileResponse {
@@ -1273,8 +1368,8 @@ async fn sync_single_file(
     };
 
     // Insert telemetry
-    if let Err(e) = state.db.bulk_insert_telemetry(flight_id, &parse_result.points) {
-        let _ = state.db.delete_flight(flight_id);
+    if let Err(e) = pdb.db.bulk_insert_telemetry(flight_id, &parse_result.points) {
+        let _ = pdb.db.delete_flight(flight_id);
         return Ok(Json(SyncFileResponse {
             success: false,
             message: format!("Failed to insert telemetry: {}", e),
@@ -1293,35 +1388,42 @@ async fn sync_single_file(
         } else {
             parse_result.tags.clone()
         };
-        if let Err(e) = state.db.insert_flight_tags(flight_id, &tags) {
+        if let Err(e) = pdb.db.insert_flight_tags(flight_id, &tags) {
             log::warn!("Failed to insert tags: {}", e);
         }
     }
 
     // Insert manual tags from re-imported CSV exports (always inserted regardless of smart_tags_enabled)
     for manual_tag in &parse_result.manual_tags {
-        if let Err(e) = state.db.add_flight_tag(flight_id, manual_tag) {
+        if let Err(e) = pdb.db.add_flight_tag(flight_id, manual_tag) {
             log::warn!("Failed to insert manual tag '{}': {}", manual_tag, e);
+        }
+    }
+
+    // Auto-tag with profile name for non-default profiles
+    if pdb.profile != "default" {
+        if let Err(e) = pdb.db.add_flight_tag(flight_id, &pdb.profile) {
+            log::warn!("Failed to insert profile tag '{}': {}", pdb.profile, e);
         }
     }
 
     // Insert notes from re-imported CSV exports
     if let Some(ref notes) = parse_result.notes {
-        if let Err(e) = state.db.update_flight_notes(flight_id, Some(notes.as_str())) {
+        if let Err(e) = pdb.db.update_flight_notes(flight_id, Some(notes.as_str())) {
             log::warn!("Failed to insert notes: {}", e);
         }
     }
 
     // Apply color from re-imported CSV exports
     if let Some(ref color) = parse_result.color {
-        if let Err(e) = state.db.update_flight_color(flight_id, color) {
+        if let Err(e) = pdb.db.update_flight_color(flight_id, color) {
             log::warn!("Failed to set color: {}", e);
         }
     }
 
     // Insert app messages (tips and warnings) from DJI logs
     if !parse_result.messages.is_empty() {
-        if let Err(e) = state.db.insert_flight_messages(flight_id, &parse_result.messages) {
+        if let Err(e) = pdb.db.insert_flight_messages(flight_id, &parse_result.messages) {
             log::warn!("Failed to insert messages: {}", e);
         }
     }
@@ -1335,11 +1437,12 @@ async fn sync_single_file(
 
 /// POST /api/sync — Trigger sync from SYNC_LOGS_PATH folder
 async fn sync_from_folder(
-    AxumState(state): AxumState<WebAppState>,
+    AxumState(_state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Result<Json<SyncResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let sync_path = match std::env::var("SYNC_LOGS_PATH") {
-        Ok(path) => path,
-        Err(_) => {
+    let sync_dir = match pdb.sync_path() {
+        Some(p) => p,
+        None => {
             return Ok(Json(SyncResponse {
                 processed: 0,
                 skipped: 0,
@@ -1351,19 +1454,27 @@ async fn sync_from_folder(
         }
     };
 
-    let sync_dir = std::path::PathBuf::from(&sync_path);
+    let sync_path_str = sync_dir.to_string_lossy().to_string();
+
+    // Auto-create the profile subfolder if it doesn't exist yet
+    if !sync_dir.exists() {
+        if let Err(e) = std::fs::create_dir_all(&sync_dir) {
+            log::warn!("Failed to create sync folder {}: {}", sync_path_str, e);
+        }
+    }
+
     if !sync_dir.exists() {
         return Ok(Json(SyncResponse {
             processed: 0,
             skipped: 0,
             errors: 0,
-            message: format!("Sync folder does not exist: {}", sync_path),
-            sync_path: Some(sync_path),
+            message: format!("Sync folder does not exist: {}", sync_path_str),
+            sync_path: Some(sync_path_str),
             auto_sync: false,
         }));
     }
 
-    log::info!("Starting sync from folder: {}", sync_path);
+    log::info!("Starting sync from folder: {}", sync_path_str);
     let start = std::time::Instant::now();
 
     // Read all log files from the sync folder
@@ -1397,18 +1508,18 @@ async fn sync_from_folder(
             skipped: 0,
             errors: 0,
             message: "No log files found in sync folder".to_string(),
-            sync_path: Some(sync_path),
+            sync_path: Some(sync_path_str),
             auto_sync: false,
         }));
     }
 
-    let parser = LogParser::new(&state.db);
+    let parser = LogParser::new(&pdb.db);
     let mut processed = 0usize;
     let mut skipped = 0usize;
     let mut errors = 0usize;
 
     // Check smart tags setting
-    let config_path = state.db.data_dir.join("config.json");
+    let config_path = pdb.config_path();
     let config: serde_json::Value = if config_path.exists() {
         std::fs::read_to_string(&config_path)
             .ok()
@@ -1437,7 +1548,7 @@ async fn sync_from_folder(
         };
 
         // Check for duplicate flight
-        if let Some(matching_flight) = state.db.is_duplicate_flight(
+        if let Some(matching_flight) = pdb.db.is_duplicate_flight(
             parse_result.metadata.drone_serial.as_deref(),
             parse_result.metadata.battery_serial.as_deref(),
             parse_result.metadata.start_time,
@@ -1448,7 +1559,7 @@ async fn sync_from_folder(
         }
 
         // Insert flight
-        let flight_id = match state.db.insert_flight(&parse_result.metadata) {
+        let flight_id = match pdb.db.insert_flight(&parse_result.metadata) {
             Ok(id) => id,
             Err(e) => {
                 log::warn!("Failed to insert flight from {}: {}", file_name, e);
@@ -1458,9 +1569,9 @@ async fn sync_from_folder(
         };
 
         // Insert telemetry
-        if let Err(e) = state.db.bulk_insert_telemetry(flight_id, &parse_result.points) {
+        if let Err(e) = pdb.db.bulk_insert_telemetry(flight_id, &parse_result.points) {
             log::warn!("Failed to insert telemetry for {}: {}", file_name, e);
-            let _ = state.db.delete_flight(flight_id);
+            let _ = pdb.db.delete_flight(flight_id);
             errors += 1;
             continue;
         }
@@ -1476,35 +1587,42 @@ async fn sync_from_folder(
             } else {
                 parse_result.tags.clone()
             };
-            if let Err(e) = state.db.insert_flight_tags(flight_id, &tags) {
+            if let Err(e) = pdb.db.insert_flight_tags(flight_id, &tags) {
                 log::warn!("Failed to insert tags for {}: {}", file_name, e);
             }
         }
 
         // Insert manual tags from re-imported CSV exports (always inserted regardless of smart_tags_enabled)
         for manual_tag in &parse_result.manual_tags {
-            if let Err(e) = state.db.add_flight_tag(flight_id, manual_tag) {
+            if let Err(e) = pdb.db.add_flight_tag(flight_id, manual_tag) {
                 log::warn!("Failed to insert manual tag '{}' for {}: {}", manual_tag, file_name, e);
+            }
+        }
+
+        // Auto-tag with profile name for non-default profiles
+        if pdb.profile != "default" {
+            if let Err(e) = pdb.db.add_flight_tag(flight_id, &pdb.profile) {
+                log::warn!("Failed to insert profile tag '{}' for {}: {}", pdb.profile, file_name, e);
             }
         }
 
         // Insert notes from re-imported CSV exports
         if let Some(ref notes) = parse_result.notes {
-            if let Err(e) = state.db.update_flight_notes(flight_id, Some(notes.as_str())) {
+            if let Err(e) = pdb.db.update_flight_notes(flight_id, Some(notes.as_str())) {
                 log::warn!("Failed to insert notes for {}: {}", file_name, e);
             }
         }
 
         // Apply color from re-imported CSV exports
         if let Some(ref color) = parse_result.color {
-            if let Err(e) = state.db.update_flight_color(flight_id, color) {
+            if let Err(e) = pdb.db.update_flight_color(flight_id, color) {
                 log::warn!("Failed to set color for {}: {}", file_name, e);
             }
         }
 
         // Insert app messages (tips and warnings) from DJI logs
         if !parse_result.messages.is_empty() {
-            if let Err(e) = state.db.insert_flight_messages(flight_id, &parse_result.messages) {
+            if let Err(e) = pdb.db.insert_flight_messages(flight_id, &parse_result.messages) {
                 log::warn!("Failed to insert messages for {}: {}", file_name, e);
             }
         }
@@ -1525,7 +1643,7 @@ async fn sync_from_folder(
         skipped,
         errors,
         message: msg,
-        sync_path: Some(sync_path),
+        sync_path: Some(sync_path_str),
         auto_sync: false,
     }))
 }
@@ -1543,9 +1661,9 @@ struct EquipmentNamesResponse {
 
 /// GET /api/equipment_names — Get all custom equipment names
 async fn get_equipment_names(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
 ) -> Result<Json<EquipmentNamesResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let (battery_list, aircraft_list) = state.db.get_all_equipment_names()
+    let (battery_list, aircraft_list) = pdb.db.get_all_equipment_names()
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get equipment names: {}", e)))?;
     
     let battery_names: std::collections::HashMap<String, String> = battery_list.into_iter().collect();
@@ -1564,11 +1682,94 @@ struct SetEquipmentNamePayload {
 
 /// POST /api/equipment_names — Set a custom equipment name
 async fn set_equipment_name(
-    AxumState(state): AxumState<WebAppState>,
+    pdb: ProfileDb,
     Json(payload): Json<SetEquipmentNamePayload>,
 ) -> Result<Json<bool>, (StatusCode, Json<ErrorResponse>)> {
-    state.db.set_equipment_name(&payload.serial, &payload.equipment_type, &payload.display_name)
+    pdb.db.set_equipment_name(&payload.serial, &payload.equipment_type, &payload.display_name)
         .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to set equipment name: {}", e)))?;
+    Ok(Json(true))
+}
+
+// ============================================================================
+// PROFILE MANAGEMENT
+// ============================================================================
+
+async fn list_profiles(
+    AxumState(state): AxumState<WebAppState>,
+) -> Json<Vec<String>> {
+    Json(database::list_profiles(&state.data_dir))
+}
+
+async fn get_active_profile(
+    AxumState(state): AxumState<WebAppState>,
+) -> Json<String> {
+    Json(database::get_active_profile(&state.data_dir))
+}
+
+#[derive(Deserialize)]
+struct SwitchProfilePayload {
+    name: String,
+    #[serde(default)]
+    create: bool,
+}
+
+async fn switch_profile(
+    AxumState(state): AxumState<WebAppState>,
+    Json(payload): Json<SwitchProfilePayload>,
+) -> Result<Json<String>, (StatusCode, Json<ErrorResponse>)> {
+    let profile = payload.name.trim().to_string();
+
+    // Validate (unless default)
+    if profile != "default" {
+        database::validate_profile_name(&profile)
+            .map_err(|e| err_response(StatusCode::BAD_REQUEST, e))?;
+    }
+
+    // If this is a create request, reject if profile already exists
+    if payload.create && database::profile_exists(&state.data_dir, &profile) {
+        return Err(err_response(StatusCode::CONFLICT, format!("Profile '{}' already exists", profile)));
+    }
+
+    log::info!("Ensuring profile '{}' exists", profile);
+
+    // Open (or create) the target database — this caches it in the pool
+    state.db_for_profile(&profile)
+        .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to open profile '{}': {}", profile, e)))?;
+
+    // Persist as the server-default active profile
+    database::set_active_profile(&state.data_dir, &profile)
+        .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to persist profile: {}", e)))?;
+
+    log::info!("Profile '{}' ready", profile);
+    Ok(Json(profile))
+}
+
+#[derive(Deserialize)]
+struct DeleteProfileParams {
+    name: String,
+}
+
+async fn delete_profile_endpoint(
+    AxumState(state): AxumState<WebAppState>,
+    Query(params): Query<DeleteProfileParams>,
+) -> Result<Json<bool>, (StatusCode, Json<ErrorResponse>)> {
+    let profile = params.name.trim().to_string();
+
+    if profile == "default" {
+        return Err(err_response(StatusCode::BAD_REQUEST, "Cannot delete the default profile"));
+    }
+
+    let active = database::get_active_profile(&state.data_dir);
+    if active == profile {
+        return Err(err_response(StatusCode::BAD_REQUEST, "Cannot delete the currently active profile. Switch to a different profile first."));
+    }
+
+    // Evict cached connection before deleting the file
+    state.evict_profile(&profile);
+
+    database::delete_profile(&state.data_dir, &profile)
+        .map_err(|e| err_response(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
     Ok(Json(true))
 }
 
@@ -1619,6 +1820,10 @@ pub fn build_router(state: WebAppState) -> Router {
         .route("/api/sync", post(sync_from_folder))
         .route("/api/equipment_names", get(get_equipment_names))
         .route("/api/equipment_names", post(set_equipment_name))
+        .route("/api/profiles", get(list_profiles))
+        .route("/api/profiles/active", get(get_active_profile))
+        .route("/api/profiles/switch", post(switch_profile))
+        .route("/api/profiles/delete", delete(delete_profile_endpoint))
         .layer(cors)
         .layer(DefaultBodyLimit::max(250 * 1024 * 1024)) // 250 MB
         .with_state(state)
@@ -1626,8 +1831,17 @@ pub fn build_router(state: WebAppState) -> Router {
 
 /// Start the Axum web server
 pub async fn start_server(data_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let db = Database::new(data_dir)?;
-    let state = WebAppState { db: Arc::new(db) };
+    // Read persisted active profile
+    let profile = database::get_active_profile(&data_dir);
+    log::info!("Active profile: {}", profile);
+
+    let db = Database::new(data_dir.clone(), &profile)?;
+    let mut initial_pool = HashMap::new();
+    initial_pool.insert(profile, Arc::new(db));
+    let state = WebAppState {
+        databases: Arc::new(std::sync::RwLock::new(initial_pool)),
+        data_dir,
+    };
 
     // Start the scheduled sync if SYNC_INTERVAL and SYNC_LOGS_PATH are configured
     if let (Ok(sync_path), Ok(sync_interval)) = (
@@ -1704,145 +1918,177 @@ async fn start_sync_scheduler(state: WebAppState, cron_expr: &str) -> Result<(),
     }
 }
 
-/// Run the folder sync operation (called by scheduler)
+/// Run the folder sync operation for ALL profiles (called by scheduler).
+/// Each profile syncs from its own subfolder: base for "default", base/{profile} for others.
 async fn run_scheduled_sync(state: &WebAppState) -> Result<(usize, usize, usize), String> {
-    let sync_path = std::env::var("SYNC_LOGS_PATH")
+    let _base_sync = std::env::var("SYNC_LOGS_PATH")
         .map_err(|_| "SYNC_LOGS_PATH not configured".to_string())?;
-    
-    let sync_dir = std::path::PathBuf::from(&sync_path);
-    if !sync_dir.exists() {
-        return Err(format!("Sync folder does not exist: {}", sync_path));
-    }
-    
-    let entries = std::fs::read_dir(&sync_dir)
-        .map_err(|e| format!("Failed to read sync folder: {}", e))?;
-    
-    let log_files: Vec<PathBuf> = entries
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            if let Ok(file_type) = entry.file_type() {
-                if file_type.is_file() {
-                    let name = entry.file_name().to_string_lossy().to_lowercase();
-                    return name.ends_with(".txt") || name.ends_with(".csv");
+
+    let profiles = database::list_profiles(&state.data_dir);
+    let mut total_processed = 0usize;
+    let mut total_skipped = 0usize;
+    let mut total_errors = 0usize;
+
+    for profile in &profiles {
+        let sync_dir = match database::sync_path_for_profile(profile) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // Skip profiles whose sync folder doesn't exist (don't auto-create for scheduled sync)
+        if !sync_dir.exists() {
+            continue;
+        }
+
+        let entries = match std::fs::read_dir(&sync_dir) {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!("Scheduled sync: Failed to read {} for profile '{}': {}", sync_dir.display(), profile, e);
+                total_errors += 1;
+                continue;
+            }
+        };
+
+        let log_files: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_file() {
+                        let name = entry.file_name().to_string_lossy().to_lowercase();
+                        return name.ends_with(".txt") || name.ends_with(".csv");
+                    }
+                }
+                false
+            })
+            .map(|entry| entry.path())
+            .collect();
+
+        if log_files.is_empty() {
+            continue;
+        }
+
+        // Get (or create) the DB for this profile
+        let db = match state.db_for_profile(profile) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("Scheduled sync: Failed to open DB for profile '{}': {}", profile, e);
+                total_errors += 1;
+                continue;
+            }
+        };
+
+        let parser = LogParser::new(&db);
+
+        // Load per-profile smart tags config
+        let config_path = database::config_path_for_profile(&state.data_dir, profile);
+        let config: serde_json::Value = if config_path.exists() {
+            std::fs::read_to_string(&config_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+        let tags_enabled = config.get("smart_tags_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+
+        for file_path in &log_files {
+            let file_name = file_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+
+            let parse_result = match parser.parse_log(file_path).await {
+                Ok(result) => result,
+                Err(crate::parser::ParserError::AlreadyImported(_)) => {
+                    total_skipped += 1;
+                    continue;
+                }
+                Err(e) => {
+                    log::warn!("Scheduled sync [{}]: Failed to parse {}: {}", profile, file_name, e);
+                    total_errors += 1;
+                    continue;
+                }
+            };
+
+            // Check for duplicate flight
+            if db.is_duplicate_flight(
+                parse_result.metadata.drone_serial.as_deref(),
+                parse_result.metadata.battery_serial.as_deref(),
+                parse_result.metadata.start_time,
+            ).unwrap_or(None).is_some() {
+                total_skipped += 1;
+                continue;
+            }
+
+            // Insert flight
+            let flight_id = match db.insert_flight(&parse_result.metadata) {
+                Ok(id) => id,
+                Err(e) => {
+                    log::warn!("Scheduled sync [{}]: Failed to insert flight from {}: {}", profile, file_name, e);
+                    total_errors += 1;
+                    continue;
+                }
+            };
+
+            // Insert telemetry
+            if let Err(e) = db.bulk_insert_telemetry(flight_id, &parse_result.points) {
+                log::warn!("Scheduled sync [{}]: Failed to insert telemetry for {}: {}", profile, file_name, e);
+                let _ = db.delete_flight(flight_id);
+                total_errors += 1;
+                continue;
+            }
+
+            // Insert smart tags if enabled
+            if tags_enabled {
+                let tags = if let Some(types) = config.get("enabled_tag_types").and_then(|v| v.as_array()) {
+                    let enabled_types: Vec<String> = types.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect();
+                    crate::parser::LogParser::filter_smart_tags(parse_result.tags.clone(), &enabled_types)
+                } else {
+                    parse_result.tags.clone()
+                };
+                if let Err(e) = db.insert_flight_tags(flight_id, &tags) {
+                    log::warn!("Scheduled sync [{}]: Failed to insert tags for {}: {}", profile, file_name, e);
                 }
             }
-            false
-        })
-        .map(|entry| entry.path())
-        .collect();
-    
-    if log_files.is_empty() {
-        return Ok((0, 0, 0));
+
+            // Insert manual tags from re-imported CSV exports
+            for manual_tag in &parse_result.manual_tags {
+                if let Err(e) = db.add_flight_tag(flight_id, manual_tag) {
+                    log::warn!("Scheduled sync [{}]: Failed to insert manual tag '{}' for {}: {}", profile, manual_tag, file_name, e);
+                }
+            }
+
+            // Auto-tag with profile name for non-default profiles
+            if profile != "default" {
+                if let Err(e) = db.add_flight_tag(flight_id, profile) {
+                    log::warn!("Scheduled sync [{}]: Failed to insert profile tag for {}: {}", profile, file_name, e);
+                }
+            }
+
+            // Insert notes from re-imported CSV exports
+            if let Some(ref notes) = parse_result.notes {
+                if let Err(e) = db.update_flight_notes(flight_id, Some(notes.as_str())) {
+                    log::warn!("Scheduled sync [{}]: Failed to insert notes for {}: {}", profile, file_name, e);
+                }
+            }
+
+            // Apply color from re-imported CSV exports
+            if let Some(ref color) = parse_result.color {
+                if let Err(e) = db.update_flight_color(flight_id, color) {
+                    log::warn!("Scheduled sync [{}]: Failed to set color for {}: {}", profile, file_name, e);
+                }
+            }
+
+            // Insert app messages (tips and warnings) from DJI logs
+            if !parse_result.messages.is_empty() {
+                if let Err(e) = db.insert_flight_messages(flight_id, &parse_result.messages) {
+                    log::warn!("Scheduled sync [{}]: Failed to insert messages for {}: {}", profile, file_name, e);
+                }
+            }
+
+            total_processed += 1;
+            log::debug!("Scheduled sync [{}]: Imported {}", profile, file_name);
+        }
     }
-    
-    let parser = LogParser::new(&state.db);
-    let mut processed = 0usize;
-    let mut skipped = 0usize;
-    let mut errors = 0usize;
-    
-    // Check smart tags setting
-    let config_path = state.db.data_dir.join("config.json");
-    let config: serde_json::Value = if config_path.exists() {
-        std::fs::read_to_string(&config_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or(serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-    let tags_enabled = config.get("smart_tags_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-    
-    for file_path in log_files {
-        let file_name = file_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        
-        let parse_result = match parser.parse_log(&file_path).await {
-            Ok(result) => result,
-            Err(crate::parser::ParserError::AlreadyImported(_)) => {
-                skipped += 1;
-                continue;
-            }
-            Err(e) => {
-                log::warn!("Scheduled sync: Failed to parse {}: {}", file_name, e);
-                errors += 1;
-                continue;
-            }
-        };
-        
-        // Check for duplicate flight
-        if state.db.is_duplicate_flight(
-            parse_result.metadata.drone_serial.as_deref(),
-            parse_result.metadata.battery_serial.as_deref(),
-            parse_result.metadata.start_time,
-        ).unwrap_or(None).is_some() {
-            skipped += 1;
-            continue;
-        }
-        
-        // Insert flight
-        let flight_id = match state.db.insert_flight(&parse_result.metadata) {
-            Ok(id) => id,
-            Err(e) => {
-                log::warn!("Scheduled sync: Failed to insert flight from {}: {}", file_name, e);
-                errors += 1;
-                continue;
-            }
-        };
-        
-        // Insert telemetry
-        if let Err(e) = state.db.bulk_insert_telemetry(flight_id, &parse_result.points) {
-            log::warn!("Scheduled sync: Failed to insert telemetry for {}: {}", file_name, e);
-            let _ = state.db.delete_flight(flight_id);
-            errors += 1;
-            continue;
-        }
-        
-        // Insert smart tags if enabled
-        if tags_enabled {
-            // Filter tags based on enabled_tag_types if configured
-            let tags = if let Some(types) = config.get("enabled_tag_types").and_then(|v| v.as_array()) {
-                let enabled_types: Vec<String> = types.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect();
-                crate::parser::LogParser::filter_smart_tags(parse_result.tags.clone(), &enabled_types)
-            } else {
-                parse_result.tags.clone()
-            };
-            if let Err(e) = state.db.insert_flight_tags(flight_id, &tags) {
-                log::warn!("Scheduled sync: Failed to insert tags for {}: {}", file_name, e);
-            }
-        }
 
-        // Insert manual tags from re-imported CSV exports (always inserted regardless of smart_tags_enabled)
-        for manual_tag in &parse_result.manual_tags {
-            if let Err(e) = state.db.add_flight_tag(flight_id, manual_tag) {
-                log::warn!("Scheduled sync: Failed to insert manual tag '{}' for {}: {}", manual_tag, file_name, e);
-            }
-        }
-
-        // Insert notes from re-imported CSV exports
-        if let Some(ref notes) = parse_result.notes {
-            if let Err(e) = state.db.update_flight_notes(flight_id, Some(notes.as_str())) {
-                log::warn!("Scheduled sync: Failed to insert notes for {}: {}", file_name, e);
-            }
-        }
-
-        // Apply color from re-imported CSV exports
-        if let Some(ref color) = parse_result.color {
-            if let Err(e) = state.db.update_flight_color(flight_id, color) {
-                log::warn!("Scheduled sync: Failed to set color for {}: {}", file_name, e);
-            }
-        }
-
-        // Insert app messages (tips and warnings) from DJI logs
-        if !parse_result.messages.is_empty() {
-            if let Err(e) = state.db.insert_flight_messages(flight_id, &parse_result.messages) {
-                log::warn!("Scheduled sync: Failed to insert messages for {}: {}", file_name, e);
-            }
-        }
-        
-        processed += 1;
-        log::debug!("Scheduled sync: Imported {}", file_name);
-    }
-    
-    Ok((processed, skipped, errors))
+    Ok((total_processed, total_skipped, total_errors))
 }

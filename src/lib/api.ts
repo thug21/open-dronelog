@@ -35,9 +35,21 @@ async function getTauriInvoke() {
 // Web fetch helpers
 // ============================================================================
 
+/**
+ * Build the per-request headers that identify the caller's active profile.
+ * In web mode every request includes `X-Profile` so the server can route
+ * the request to the correct database — enabling independent multi-tab usage.
+ */
+function profileHeaders(): Record<string, string> {
+  if (typeof sessionStorage !== 'undefined') {
+    return { 'X-Profile': sessionStorage.getItem('activeProfile') || 'default' };
+  }
+  return { 'X-Profile': 'default' };
+}
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${url}`, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    headers: { 'Content-Type': 'application/json', ...profileHeaders(), ...options?.headers },
     ...options,
   });
   if (!response.ok) {
@@ -107,6 +119,7 @@ export async function importLog(
     const response = await fetch(`${API_BASE}/import`, {
       method: 'POST',
       body: formData,
+      headers: profileHeaders(),
     });
     if (!response.ok) {
       const body = await response.text();
@@ -687,7 +700,7 @@ function getBackupFilename(): string {
 export async function backupDatabase(): Promise<boolean> {
   if (isWeb) {
     // Web mode: download via fetch
-    const response = await fetch(`${API_BASE}/backup`);
+    const response = await fetch(`${API_BASE}/backup`, { headers: profileHeaders() });
     if (!response.ok) {
       const body = await response.text();
       throw new Error(body);
@@ -723,6 +736,7 @@ export async function restoreDatabase(file?: File): Promise<string> {
     const response = await fetch(`${API_BASE}/backup/restore`, {
       method: 'POST',
       body: formData,
+      headers: profileHeaders(),
     });
     if (!response.ok) {
       const body = await response.text();
@@ -741,4 +755,45 @@ export async function restoreDatabase(file?: File): Promise<string> {
   const filePath = typeof srcPath === 'string' ? srcPath : (srcPath as { path: string }).path;
   const invoke = await getTauriInvoke();
   return invoke('import_backup', { srcPath: filePath }) as Promise<string>;
+}
+
+// ============================================================================
+// Profile Management
+// ============================================================================
+
+export async function listProfiles(): Promise<string[]> {
+  if (isWeb) {
+    return fetchJson<string[]>('/profiles');
+  }
+  const invoke = await getTauriInvoke();
+  return invoke('list_profiles') as Promise<string[]>;
+}
+
+export async function getActiveProfile(): Promise<string> {
+  if (isWeb) {
+    return fetchJson<string>('/profiles/active');
+  }
+  const invoke = await getTauriInvoke();
+  return invoke('get_active_profile') as Promise<string>;
+}
+
+export async function switchProfile(name: string, create?: boolean): Promise<string> {
+  if (isWeb) {
+    return fetchJson<string>('/profiles/switch', {
+      method: 'POST',
+      body: JSON.stringify({ name, create: !!create }),
+    });
+  }
+  const invoke = await getTauriInvoke();
+  return invoke('switch_profile', { name, create: !!create }) as Promise<string>;
+}
+
+export async function deleteProfile(name: string): Promise<boolean> {
+  if (isWeb) {
+    return fetchJson<boolean>(`/profiles/delete?name=${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    });
+  }
+  const invoke = await getTauriInvoke();
+  return invoke('delete_profile', { name }) as Promise<boolean>;
 }

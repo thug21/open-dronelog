@@ -14,6 +14,7 @@ import { TelemetryCharts } from '@/components/charts/TelemetryCharts';
 import { FlightMap } from '@/components/map/FlightMap';
 import { FlightMessagesModal } from './FlightMessagesModal';
 import { Overview } from './Overview';
+import { ProfileSelector } from './ProfileSelector';
 import { isWebMode } from '@/lib/api';
 
 export function Dashboard() {
@@ -254,6 +255,7 @@ export function Dashboard() {
               >
                 {t('dashboard.overview')}
               </button>
+              <ProfileSelector />
             </div>
           </div>
 

@@ -186,6 +186,13 @@ interface FlightState {
   setMaintenanceThreshold: (type: 'battery' | 'aircraft', field: 'flights' | 'airtime', value: number) => void;
   performMaintenance: (type: 'battery' | 'aircraft', serial: string, date?: Date) => void;
   getMaintenanceLastReset: (type: 'battery' | 'aircraft', serial: string) => string | null;
+
+  // Profile management
+  activeProfile: string;
+  profiles: string[];
+  loadProfiles: () => Promise<void>;
+  switchProfile: (name: string, create?: boolean) => Promise<void>;
+  deleteProfile: (name: string) => Promise<void>;
 }
 
 export const useFlightStore = create<FlightState>((set, get) => ({
@@ -305,6 +312,11 @@ export const useFlightStore = create<FlightState>((set, get) => ({
       return { battery: {}, aircraft: {} };
     }
   })(),
+
+  // Profile management
+  activeProfile: (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('activeProfile')) || 'default',
+  profiles: ['default'],
+
   setMaintenanceThreshold: (type, field, value) => {
     const thresholds = { ...get().maintenanceThresholds };
     thresholds[type] = { ...thresholds[type], [field]: value };
@@ -1011,4 +1023,83 @@ export const useFlightStore = create<FlightState>((set, get) => ({
 
   // Clear flight data cache (forces refresh when viewing flights after bulk operations)
   clearFlightDataCache: () => set({ _flightDataCache: new Map() }),
+
+  // Profile management actions
+  loadProfiles: async () => {
+    try {
+      const profiles = await api.listProfiles();
+      // Use the client-side (per-tab) active profile from sessionStorage,
+      // falling back to the server-default only on first visit.
+      let active = typeof sessionStorage !== 'undefined'
+        ? sessionStorage.getItem('activeProfile') || ''
+        : '';
+      if (!active || !profiles.includes(active)) {
+        active = await api.getActiveProfile();
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem('activeProfile', active);
+        }
+      }
+      set({ profiles, activeProfile: active });
+    } catch (err) {
+      console.warn('Failed to load profiles:', err);
+    }
+  },
+
+  switchProfile: async (name: string, create?: boolean) => {
+    const currentProfile = get().activeProfile;
+    if (currentProfile === name) return;
+
+    // ── Save current profile's localStorage settings ──
+    const perProfileKeys = [
+      'unitSystem', 'themeMode', 'appLanguage', 'locale', 'dateLocale',
+      'timeFormat', 'hideSerialNumbers', 'batteryNameMap', 'droneNameMap',
+      'maintenanceThresholds', 'maintenanceLastReset', 'supporterBadgeActive',
+      'supporterBadgeVerified', 'supporterActivationCode', 'donationAcknowledged',
+      'lastSelectedFlightId', 'sidebarWidth', 'chartFieldSelections',
+      'syncFolderPath', 'htmlReportPilotName', 'htmlReportDocTitle',
+      'enabledSmartTagTypes',
+    ];
+    if (typeof localStorage !== 'undefined') {
+      const snapshot: Record<string, string> = {};
+      for (const key of perProfileKeys) {
+        const val = localStorage.getItem(key);
+        if (val !== null) snapshot[key] = val;
+      }
+      localStorage.setItem(`profileSettings:${currentProfile}`, JSON.stringify(snapshot));
+    }
+
+    // ── Switch database on the backend ──
+    await api.switchProfile(name, create);
+
+    // ── Load target profile's settings ──
+    if (typeof localStorage !== 'undefined') {
+      // Clear per-profile keys first
+      for (const key of perProfileKeys) {
+        localStorage.removeItem(key);
+      }
+      // Restore from saved snapshot (if exists)
+      const savedSnapshot = localStorage.getItem(`profileSettings:${name}`);
+      if (savedSnapshot) {
+        try {
+          const restored: Record<string, string> = JSON.parse(savedSnapshot);
+          for (const [key, val] of Object.entries(restored)) {
+            localStorage.setItem(key, val);
+          }
+        } catch {
+          // ignore corrupt snapshot
+        }
+      }
+      localStorage.setItem('activeProfile', name);
+      sessionStorage.setItem('activeProfile', name);
+    }
+
+    // Reload the page so all state re-initializes from localStorage
+    window.location.reload();
+  },
+
+  deleteProfile: async (name: string) => {
+    await api.deleteProfile(name);
+    // Refresh the profile list
+    await get().loadProfiles();
+  },
 }));

@@ -638,5 +638,20 @@
     "alidade": "Alidade Suave",
     "stamenTerrain": "Terreno Stamen",
     "stamenWatercolor": "Aquarela Stamen"
+  },
+  "profile": {
+    "default": "Padrão",
+    "switchProfile": "Mudar perfil",
+    "newProfile": "Novo perfil",
+    "create": "Criar",
+    "cancel": "Cancelar",
+    "delete": "Eliminar perfil",
+    "confirmDelete": "Eliminar perfil \"{{name}}\"? Todos os voos neste perfil serão permanentemente removidos.",
+    "namePlaceholder": "Nome do perfil",
+    "errorEmpty": "O nome do perfil não pode estar vazio",
+    "errorReserved": "Não é possível usar o nome reservado 'default'",
+    "errorTooLong": "Nome do perfil muito longo (máx. 50 caracteres)",
+    "errorInvalidChars": "Apenas letras, números, hífens e underscores são permitidos",
+    "errorExists": "Já existe um perfil com este nome"
   }
 }

@@ -638,5 +638,20 @@
     "alidade": "Alidade Smooth",
     "stamenTerrain": "Stamen Terrain",
     "stamenWatercolor": "Stamen Aquarell"
+  },
+  "profile": {
+    "default": "Standard",
+    "switchProfile": "Profil wechseln",
+    "newProfile": "Neues Profil",
+    "create": "Erstellen",
+    "cancel": "Abbrechen",
+    "delete": "Profil löschen",
+    "confirmDelete": "Profil \"{{name}}\" löschen? Alle Flüge in diesem Profil werden dauerhaft entfernt.",
+    "namePlaceholder": "Profilname",
+    "errorEmpty": "Profilname darf nicht leer sein",
+    "errorReserved": "Der Name 'default' ist reserviert",
+    "errorTooLong": "Profilname zu lang (max. 50 Zeichen)",
+    "errorInvalidChars": "Nur Buchstaben, Zahlen, Bindestriche und Unterstriche erlaubt",
+    "errorExists": "Ein Profil mit diesem Namen existiert bereits"
   }
 }

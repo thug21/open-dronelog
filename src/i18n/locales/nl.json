@@ -638,5 +638,20 @@
     "alidade": "Alidade Vloeiend",
     "stamenTerrain": "Stamen Terrein",
     "stamenWatercolor": "Stamen Aquarel"
+  },
+  "profile": {
+    "default": "Standaard",
+    "switchProfile": "Profiel wisselen",
+    "newProfile": "Nieuw profiel",
+    "create": "Aanmaken",
+    "cancel": "Annuleren",
+    "delete": "Profiel verwijderen",
+    "confirmDelete": "Profiel \"{{name}}\" verwijderen? Alle vluchten in dit profiel worden permanent verwijderd.",
+    "namePlaceholder": "Profielnaam",
+    "errorEmpty": "Profielnaam mag niet leeg zijn",
+    "errorReserved": "De naam 'default' is gereserveerd",
+    "errorTooLong": "Profielnaam te lang (max 50 tekens)",
+    "errorInvalidChars": "Alleen letters, cijfers, streepjes en underscores toegestaan",
+    "errorExists": "Er bestaat al een profiel met deze naam"
   }
 }

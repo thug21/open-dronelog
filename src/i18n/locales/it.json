@@ -638,5 +638,20 @@
     "alidade": "Alidade Liscio",
     "stamenTerrain": "Terreno Stamen",
     "stamenWatercolor": "Acquerello Stamen"
+  },
+  "profile": {
+    "default": "Predefinito",
+    "switchProfile": "Cambia profilo",
+    "newProfile": "Nuovo profilo",
+    "create": "Crea",
+    "cancel": "Annulla",
+    "delete": "Elimina profilo",
+    "confirmDelete": "Eliminare il profilo \"{{name}}\"? Tutti i voli di questo profilo verranno eliminati permanentemente.",
+    "namePlaceholder": "Nome del profilo",
+    "errorEmpty": "Il nome del profilo non può essere vuoto",
+    "errorReserved": "Non è possibile usare il nome riservato 'default'",
+    "errorTooLong": "Nome del profilo troppo lungo (max 50 caratteri)",
+    "errorInvalidChars": "Sono ammessi solo lettere, numeri, trattini e underscore",
+    "errorExists": "Esiste già un profilo con questo nome"
   }
 }

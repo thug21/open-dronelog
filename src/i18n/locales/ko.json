@@ -638,5 +638,20 @@
     "alidade": "알리다드 스무스",
     "stamenTerrain": "스타멘 지형",
     "stamenWatercolor": "스타멘 수채화"
+  },
+  "profile": {
+    "default": "기본",
+    "switchProfile": "프로필 전환",
+    "newProfile": "새 프로필",
+    "create": "생성",
+    "cancel": "취소",
+    "delete": "프로필 삭제",
+    "confirmDelete": "프로필 \"{{name}}\"을(를) 삭제하시겠습니까? 이 프로필의 모든 비행이 영구적으로 삭제됩니다.",
+    "namePlaceholder": "프로필 이름",
+    "errorEmpty": "프로필 이름을 입력하세요",
+    "errorReserved": "예약된 이름 'default'는 사용할 수 없습니다",
+    "errorTooLong": "프로필 이름이 너무 깁니다 (최대 50자)",
+    "errorInvalidChars": "영문, 숫자, 하이픈, 밑줄만 사용 가능합니다",
+    "errorExists": "같은 이름의 프로필이 이미 존재합니다"
   }
 }

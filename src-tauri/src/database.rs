@@ -45,20 +45,27 @@ impl Drop for Database {
 }
 
 impl Database {
-    /// Initialize the database in the app data directory.
+    /// Initialize the database in the app data directory for a given profile.
+    ///
+    /// Profile "default" uses `flights.db`, any other profile uses `flights_{name}.db`.
     ///
     /// Creates the following directory structure:
     /// ```text
     /// {app_data_dir}/
-    /// ├── flights.db       # DuckDB database file
-    /// └── keychains/       # Cached decryption keys
+    /// ├── flights.db              # DuckDB database file (default profile)
+    /// ├── flights_{profile}.db    # DuckDB database file (named profile)
+    /// └── keychains/              # Cached decryption keys
     /// ```
-    pub fn new(app_data_dir: PathBuf) -> Result<Self, DatabaseError> {
+    pub fn new(app_data_dir: PathBuf, profile: &str) -> Result<Self, DatabaseError> {
         // Ensure directory structure exists
         fs::create_dir_all(&app_data_dir)?;
         fs::create_dir_all(app_data_dir.join("keychains"))?;
 
-        let db_path = app_data_dir.join("flights.db");
+        let db_path = if profile == "default" {
+            app_data_dir.join("flights.db")
+        } else {
+            app_data_dir.join(format!("flights_{}.db", profile))
+        };
 
         log::info!("Initializing DuckDB at: {:?}", db_path);
 
@@ -2381,6 +2388,171 @@ impl Database {
     }
 }
 
+// ============================================================================
+// Profile management (standalone functions operating on the data directory)
+// ============================================================================
+
+/// Validate a profile name. Returns Ok(()) if valid, Err with message otherwise.
+pub fn validate_profile_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Profile name cannot be empty".to_string());
+    }
+    if name == "default" {
+        return Err("Cannot use reserved name 'default'".to_string());
+    }
+    if name.len() > 50 {
+        return Err("Profile name too long (max 50 characters)".to_string());
+    }
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Err("Profile name can only contain letters, numbers, hyphens, and underscores".to_string());
+    }
+    Ok(())
+}
+
+/// List all available profiles by scanning the data directory for flights*.db files.
+pub fn list_profiles(data_dir: &std::path::Path) -> Vec<String> {
+    let mut profiles = vec!["default".to_string()];
+
+    if let Ok(entries) = fs::read_dir(data_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Match flights_{profile}.db but not .db.wal, .db.bak, etc.
+            if name.starts_with("flights_") && name.ends_with(".db") && !name.contains(".db.") {
+                if let Some(profile) = name.strip_prefix("flights_").and_then(|s| s.strip_suffix(".db")) {
+                    if !profile.is_empty() && !profiles.contains(&profile.to_string()) {
+                        profiles.push(profile.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    profiles.sort();
+    // Ensure "default" is always first
+    if let Some(pos) = profiles.iter().position(|p| p == "default") {
+        if pos != 0 {
+            profiles.remove(pos);
+            profiles.insert(0, "default".to_string());
+        }
+    }
+
+    profiles
+}
+
+/// Get the currently active profile name from the persisted file.
+pub fn get_active_profile(data_dir: &std::path::Path) -> String {
+    let path = data_dir.join("active_profile.txt");
+    fs::read_to_string(path)
+        .unwrap_or_else(|_| "default".to_string())
+        .trim()
+        .to_string()
+}
+
+/// Persist the active profile name to a file.
+pub fn set_active_profile(data_dir: &std::path::Path, profile: &str) -> Result<(), std::io::Error> {
+    fs::write(data_dir.join("active_profile.txt"), profile)
+}
+
+/// Return the config file path for a given profile.
+/// "default" → `config.json`, anything else → `config_{profile}.json`.
+pub fn config_path_for_profile(data_dir: &std::path::Path, profile: &str) -> std::path::PathBuf {
+    if profile == "default" {
+        data_dir.join("config.json")
+    } else {
+        data_dir.join(format!("config_{}.json", profile))
+    }
+}
+
+/// Return the default uploaded-files folder for a given profile.
+/// "default" → `uploaded`, anything else → `uploaded/{profile}`.
+pub fn default_upload_folder(data_dir: &std::path::Path, profile: &str) -> std::path::PathBuf {
+    if profile == "default" {
+        data_dir.join("uploaded")
+    } else {
+        data_dir.join("uploaded").join(profile)
+    }
+}
+
+/// Return the sync folder path for a given profile.
+/// When `SYNC_LOGS_PATH` provides a base path:
+///   "default" → `{base}`, anything else → `{base}/{profile}`.
+/// Returns `None` when the env-var is not set.
+#[allow(dead_code)]
+pub fn sync_path_for_profile(profile: &str) -> Option<std::path::PathBuf> {
+    let base = std::env::var("SYNC_LOGS_PATH").ok()?;
+    let base_path = std::path::PathBuf::from(base);
+    if profile == "default" {
+        Some(base_path)
+    } else {
+        Some(base_path.join(profile))
+    }
+}
+
+/// Check whether a profile with the given name already exists (has a database file).
+/// The check is case-insensitive so that e.g. "Work" and "work" are considered the same.
+pub fn profile_exists(data_dir: &std::path::Path, profile: &str) -> bool {
+    if profile.eq_ignore_ascii_case("default") {
+        return true; // default always exists
+    }
+    // Exact match
+    let db_path = data_dir.join(format!("flights_{}.db", profile));
+    if db_path.exists() {
+        return true;
+    }
+    // Case-insensitive scan
+    let lower = profile.to_lowercase();
+    if let Ok(entries) = std::fs::read_dir(data_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if let Some(existing) = name.strip_prefix("flights_").and_then(|s| s.strip_suffix(".db")) {
+                if !existing.contains('.') && existing == lower {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Delete a profile's database file. Cannot delete "default".
+pub fn delete_profile(data_dir: &std::path::Path, profile: &str) -> Result<(), String> {
+    if profile == "default" {
+        return Err("Cannot delete the default profile".to_string());
+    }
+
+    let db_path = data_dir.join(format!("flights_{}.db", profile));
+    if db_path.exists() {
+        fs::remove_file(&db_path)
+            .map_err(|e| format!("Failed to delete profile database: {}", e))?;
+    }
+
+    // Clean up WAL file if it exists
+    let wal_path = data_dir.join(format!("flights_{}.db.wal", profile));
+    if wal_path.exists() {
+        let _ = fs::remove_file(&wal_path);
+    }
+
+    // Clean up per-profile config file
+    let cfg = config_path_for_profile(data_dir, profile);
+    if cfg.exists() {
+        let _ = fs::remove_file(&cfg);
+    }
+
+    // Clean up per-profile uploaded folder (only if it's the default location)
+    let upload_dir = default_upload_folder(data_dir, profile);
+    if upload_dir.exists() {
+        let _ = fs::remove_dir_all(&upload_dir);
+    }
+
+    // If this was the active profile, switch back to default
+    if get_active_profile(data_dir) == profile {
+        let _ = set_active_profile(data_dir, "default");
+    }
+
+    log::info!("Deleted profile '{}' and its database", profile);
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -2390,7 +2562,7 @@ mod tests {
     #[test]
     fn test_database_initialization() {
         let temp_dir = tempdir().unwrap();
-        let db = Database::new(temp_dir.path().to_path_buf()).unwrap();
+        let db = Database::new(temp_dir.path().to_path_buf(), "default").unwrap();
 
         // Verify directories were created
         assert!(temp_dir.path().join("keychains").exists());
