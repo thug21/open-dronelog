@@ -20,6 +20,7 @@ import {
   formatDateDisplay as fmtDateDisplay,
   formatDateNumeric,
   normalizeSerial,
+  isDecommissioned,
   type UnitSystem,
 } from '@/lib/utils';
 import { useFlightStore } from '@/stores/flightStore';
@@ -56,6 +57,7 @@ export function Overview({ stats, flights, unitSystem, onSelectFlight }: Overvie
   const getDroneDisplayName = useFlightStore((state) => state.getDroneDisplayName);
   const renameDrone = useFlightStore((state) => state.renameDrone);
   const droneNameMap = useFlightStore((state) => state.droneNameMap);
+  const batteryNameMap = useFlightStore((state) => state.batteryNameMap);
   const sidebarFilteredFlightIds = useFlightStore((state) => state.sidebarFilteredFlightIds);
   const getDisplaySerial = useFlightStore((state) => state.getDisplaySerial);
   const hideSerialNumbers = useFlightStore((state) => state.hideSerialNumbers);
@@ -112,6 +114,10 @@ export function Overview({ stats, flights, unitSystem, onSelectFlight }: Overvie
         maxCycleCount: data.maxCycleCount,
       }))
       .sort((a, b) => {
+        // Decommissioned batteries go to the bottom
+        const aDecom = isDecommissioned(getBatteryDisplayName(a.batterySerial));
+        const bDecom = isDecommissioned(getBatteryDisplayName(b.batterySerial));
+        if (aDecom !== bDecom) return aDecom ? 1 : -1;
         // Sort by health percentage (lowest first = needs attention first)
         const maxCycles = 400;
         const healthA = a.maxCycleCount != null
@@ -174,7 +180,12 @@ export function Overview({ stats, flights, unitSystem, onSelectFlight }: Overvie
           displayLabel: needsSerial ? `${displayName} (${getDisplaySerial(data.serial!)})` : displayName,
         };
       })
-      .sort((a, b) => b.totalDurationSecs - a.totalDurationSecs);
+      .sort((a, b) => {
+        const aDecom = isDecommissioned(a.displayLabel);
+        const bDecom = isDecommissioned(b.displayLabel);
+        if (aDecom !== bDecom) return aDecom ? 1 : -1;
+        return b.totalDurationSecs - a.totalDurationSecs;
+      });
 
     // Flights by date (from filtered)
     const dateMap = new Map<string, number>();
@@ -230,7 +241,7 @@ export function Overview({ stats, flights, unitSystem, onSelectFlight }: Overvie
       flightsByDate,
       topFlights,
     };
-  }, [filteredFlights, stats.maxDistanceFromHomeM, stats.topDistanceFlights, getDroneDisplayName, droneNameMap]);
+  }, [filteredFlights, stats.maxDistanceFromHomeM, stats.topDistanceFlights, getDroneDisplayName, droneNameMap, getBatteryDisplayName, batteryNameMap]);
 
   const filteredTopDistanceFlights = useMemo(() => {
     if (!stats.topDistanceFlights?.length) return [] as typeof stats.topDistanceFlights;
@@ -312,6 +323,7 @@ export function Overview({ stats, flights, unitSystem, onSelectFlight }: Overvie
             data={filteredStats.dronesUsed.map((d) => ({
               name: d.displayLabel,
               value: d.flightCount,
+              decommissioned: isDecommissioned(d.displayLabel),
             }))}
             emptyMessage={t('overview.noDroneData')}
           />
@@ -324,6 +336,7 @@ export function Overview({ stats, flights, unitSystem, onSelectFlight }: Overvie
             data={filteredStats.batteriesUsed.map((b) => ({
               name: getBatteryDisplayName(b.batterySerial),
               value: b.flightCount,
+              decommissioned: isDecommissioned(getBatteryDisplayName(b.batterySerial)),
             }))}
             emptyMessage={t('overview.noBatteryData')}
           />
@@ -1171,6 +1184,7 @@ function DroneFlightTimeList({
           const hasDuplicate = (displayNameCounts.get(displayName) || 0) > 1;
           const isEditing = drone.droneSerial && editingSerial === drone.droneSerial;
           const progressPercent = (drone.totalDurationSecs / maxDuration) * 100;
+          const decomm = isDecommissioned(drone.displayLabel);
 
           // Format duration as Xh Ym
           const hours = Math.floor(drone.totalDurationSecs / 3600);
@@ -1246,7 +1260,7 @@ function DroneFlightTimeList({
                       className="absolute inset-y-0 left-0 rounded-full transition-all duration-500"
                       style={{
                         width: `${progressPercent}%`,
-                        backgroundColor: isLight ? '#0ea5e9' : '#00a0dc',
+                        backgroundColor: decomm ? '#6b7280' : (isLight ? '#0ea5e9' : '#00a0dc'),
                       }}
                     />
                   </div>
@@ -1267,7 +1281,7 @@ function DonutChart({
   data,
   emptyMessage,
 }: {
-  data: { name: string; value: number }[];
+  data: { name: string; value: number; decommissioned?: boolean }[];
   emptyMessage: string;
 }) {
   const { t } = useTranslation();
@@ -1332,14 +1346,27 @@ function DonutChart({
       left: legendLeft,
       top: 'center',
       width: legendWidth,
+      pageTextStyle: { color: '#9ca3af' },
+      tooltip: { show: true },
+      formatter: (name: string) => {
+        const item = data.find((d) => d.name === name);
+        if (item?.decommissioned) {
+          return `{decom|${name}}`;
+        }
+        return name;
+      },
       textStyle: {
         color: '#9ca3af',
         fontSize: 11,
         overflow: 'truncate' as const,
-        width: legendWidth - 24, // Account for icon and padding
+        width: legendWidth - 24,
+        rich: {
+          decom: {
+            color: '#6b7280',
+            fontSize: 11,
+          },
+        },
       },
-      pageTextStyle: { color: '#9ca3af' },
-      tooltip: { show: true },
     },
     series: [
       {
@@ -1365,11 +1392,17 @@ function DonutChart({
           },
         },
         labelLine: { show: false },
-        data: data.map((item, i) => ({
-          name: item.name,
-          value: item.value,
-          itemStyle: { color: colors[i % colors.length] },
-        })),
+        data: (() => {
+          let colorIdx = 0;
+          return data.map((item) => {
+            const color = item.decommissioned ? '#6b7280' : colors[colorIdx++ % colors.length];
+            return {
+              name: item.name,
+              value: item.value,
+              itemStyle: { color },
+            };
+          });
+        })(),
       },
     ],
   };
@@ -1860,9 +1893,11 @@ function BatteryHealthList({
           const healthPercent = cycleCount != null
             ? Math.max(0, 100 - (cycleCount / maxCycles) * 100)
             : Math.max(0, 100 - (battery.flightCount / maxCycles) * 100);
-          const healthColor =
-            healthPercent > 70 ? '#10b981' : healthPercent > 40 ? '#f59e0b' : '#ef4444';
           const displayName = getBatteryDisplayName(battery.batterySerial);
+          const decomm = isDecommissioned(displayName);
+          const healthColor = decomm
+            ? '#6b7280'
+            : healthPercent > 70 ? '#10b981' : healthPercent > 40 ? '#f59e0b' : '#ef4444';
           const isEditing = editingSerial === battery.batterySerial;
 
           return (
@@ -2175,13 +2210,16 @@ function MaintenanceSection({
   // Initialize selected items when data becomes available
   useEffect(() => {
     if (batteries.length > 0 && selectedBatteries.length === 0) {
-      setSelectedBatteries([batteries[0].batterySerial]);
+      const firstActive = batteries.find(b => !isDecommissioned(getBatteryDisplayName(b.batterySerial)));
+      if (firstActive) {
+        setSelectedBatteries([firstActive.batterySerial]);
+      }
     }
   }, [batteries, selectedBatteries.length]);
 
   useEffect(() => {
     if (drones.length > 0 && selectedAircrafts.length === 0) {
-      const firstWithSerial = drones.find(d => d.droneSerial);
+      const firstWithSerial = drones.find(d => d.droneSerial && !isDecommissioned(getDroneDisplayName(d.droneSerial, d.aircraftName || d.droneModel)));
       if (firstWithSerial?.droneSerial) {
         setSelectedAircrafts([firstWithSerial.droneSerial]);
       }
@@ -2286,7 +2324,10 @@ function MaintenanceSection({
   };
 
   // Get all batteries for progress display, sorted by combined progress (flights % + airtime %)
-  const batteryProgressList = batteries.map(b => {
+  // Decommissioned batteries are excluded from maintenance tracking
+  const batteryProgressList = batteries
+    .filter(b => !isDecommissioned(getBatteryDisplayName(b.batterySerial)))
+    .map(b => {
     const progress = getBatteryProgress(b.batterySerial);
     const flightPercent = Math.min((progress.flights / maintenanceThresholds.battery.flights) * 100, 100);
     const airtimePercent = Math.min((progress.airtime / maintenanceThresholds.battery.airtime) * 100, 100);
@@ -2299,8 +2340,9 @@ function MaintenanceSection({
   }).sort((a, b) => b.combinedProgress - a.combinedProgress);
 
   // Get all aircrafts for progress display, sorted by combined progress (flights % + airtime %)
+  // Decommissioned aircraft are excluded from maintenance tracking
   const aircraftProgressList = drones
-    .filter(d => d.droneSerial)
+    .filter(d => d.droneSerial && !isDecommissioned(getDroneDisplayName(d.droneSerial, d.aircraftName || d.droneModel)))
     .map(d => {
       const progress = getAircraftProgress(d.droneSerial!);
       const flightPercent = Math.min((progress.flights / maintenanceThresholds.aircraft.flights) * 100, 100);
@@ -2491,7 +2533,7 @@ function MaintenanceSection({
                   />
                   <div className={`absolute left-0 right-0 top-full mt-1 z-50 max-h-48 rounded-lg border shadow-xl flex flex-col overflow-hidden ${dropdownBg}`}>
                     <div className="overflow-auto flex-1">
-                      {batteries.map((b) => {
+                      {batteries.filter(b => !isDecommissioned(getBatteryDisplayName(b.batterySerial))).map((b) => {
                         const isSelected = selectedBatteries.includes(b.batterySerial);
                         return (
                           <button
@@ -2789,7 +2831,7 @@ function MaintenanceSection({
                   />
                   <div className={`absolute left-0 right-0 top-full mt-1 z-50 max-h-48 rounded-lg border shadow-xl flex flex-col overflow-hidden ${dropdownBg}`}>
                     <div className="overflow-auto flex-1">
-                      {drones.filter(d => d.droneSerial).map((d) => {
+                      {drones.filter(d => d.droneSerial && !isDecommissioned(getDroneDisplayName(d.droneSerial, d.aircraftName || d.droneModel))).map((d) => {
                         const isSelected = selectedAircrafts.includes(d.droneSerial!);
                         const displayName = getDroneDisplayName(d.droneSerial!, d.aircraftName || d.droneModel);
                         return (

@@ -309,3 +309,8 @@ export function normalizeSerial(serial: string | null | undefined): string {
   if (!serial) return '';
   return serial.trim().toUpperCase();
 }
+
+/** Check if a display name indicates a decommissioned item (contains "[X]") */
+export function isDecommissioned(displayName: string): boolean {
+  return displayName.includes('[X]');
+}
