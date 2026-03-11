@@ -1,0 +1,200 @@
+name: Sign Windows Binaries (SignPath)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: 'Release tag to sign binaries for (leave empty for latest release)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  id-token: write
+  contents: write
+  actions: read
+
+jobs:
+  resolve-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Resolve release tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ inputs.release-tag }}" ]; then
+            TAG="${{ inputs.release-tag }}"
+          else
+            TAG=$(gh release view --repo "${{ github.repository }}" --json tagName -q '.tagName')
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Resolved tag: $TAG (version: $VERSION)"
+
+  build-windows:
+    needs: resolve-tag
+    runs-on: windows-latest
+    outputs:
+      exe-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
+      msi-artifact-id: ${{ steps.upload-msi.outputs.artifact-id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Build Tauri app
+        run: npx tauri build --target x86_64-pc-windows-msvc --verbose
+
+      - name: Find built artifacts
+        id: find
+        shell: bash
+        run: |
+          EXE=$(find src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -name '*.exe' -type f | head -1)
+          MSI=$(find src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi -name '*.msi' -type f | head -1)
+          if [ -z "$EXE" ] || [ -z "$MSI" ]; then
+            echo "::error::Could not find .exe or .msi in build output"
+            exit 1
+          fi
+          echo "exe-path=$EXE" >> $GITHUB_OUTPUT
+          echo "msi-path=$MSI" >> $GITHUB_OUTPUT
+          echo "Found EXE: $EXE"
+          echo "Found MSI: $MSI"
+
+      - name: Upload unsigned .exe
+        id: upload-exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-exe
+          path: ${{ steps.find.outputs.exe-path }}
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload unsigned .msi
+        id: upload-msi
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-msi
+          path: ${{ steps.find.outputs.msi-path }}
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-and-release:
+    needs: [resolve-tag, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      actions: read
+    steps:
+      - name: Sign .exe with SignPath
+        id: sign-exe
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '${{ secrets.SIGNPATH_ORGANIZATION_ID }}'
+          project-slug: '${{ secrets.SIGNPATH_PROJECT_SLUG }}'
+          signing-policy-slug: '${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}'
+          artifact-configuration-slug: '${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}'
+          github-artifact-id: '${{ needs.build-windows.outputs.exe-artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'signed/exe'
+
+      - name: Sign .msi with SignPath
+        id: sign-msi
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '${{ secrets.SIGNPATH_ORGANIZATION_ID }}'
+          project-slug: '${{ secrets.SIGNPATH_PROJECT_SLUG }}'
+          signing-policy-slug: '${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}'
+          artifact-configuration-slug: '${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}'
+          github-artifact-id: '${{ needs.build-windows.outputs.msi-artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'signed/msi'
+
+      - name: Prepare release assets
+        env:
+          VERSION: ${{ needs.resolve-tag.outputs.version }}
+        run: |
+          mkdir -p release-assets
+
+          EXE=$(find signed/exe -name '*.exe' -type f | head -1)
+          MSI=$(find signed/msi -name '*.msi' -type f | head -1)
+
+          if [ -z "$EXE" ] || [ -z "$MSI" ]; then
+            echo "::error::Signed artifacts not found"
+            exit 1
+          fi
+
+          cp "$EXE" "release-assets/open-dronelog_${VERSION}_windows_x86_64.exe"
+          cp "$MSI" "release-assets/open-dronelog_${VERSION}_windows_x86_64.msi"
+
+          echo "Prepared signed release assets:"
+          ls -la release-assets/
+
+      - name: Upload signed binaries to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+        run: |
+          gh release upload "$TAG" release-assets/* \
+            --repo "${{ github.repository }}" \
+            --clobber
+          echo "✓ Signed binaries uploaded to release $TAG"
+
+      - name: Regenerate checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+        run: |
+          mkdir -p all-assets
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --dir all-assets \
+            --pattern '*.deb' \
+            --pattern '*.rpm' \
+            --pattern '*.AppImage' \
+            --pattern '*.dmg' \
+            --pattern '*.exe' \
+            --pattern '*.msi' \
+            --pattern '*.nsis.zip' \
+            --pattern 'open-dronelog_*' || true
+
+          cd all-assets
+          if ls * &>/dev/null; then
+            sha256sum * | sort -k2 > ../checksums.txt
+            echo "Regenerated checksums:"
+            cat ../checksums.txt
+            cd ..
+            gh release upload "$TAG" checksums.txt \
+              --repo "${{ github.repository }}" \
+              --clobber
+            echo "✓ Checksums updated"
+          else
+            echo "::warning::No assets found to checksum"
+          fi
