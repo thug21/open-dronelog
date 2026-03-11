@@ -15,7 +15,7 @@ jobs:
       should_build: ${{ steps.check.outputs.should_build }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
@@ -59,10 +59,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: 'npm'
@@ -115,7 +115,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout (for version detection)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           sparse-checkout: src-tauri/tauri.conf.json
           sparse-checkout-cone-mode: false
