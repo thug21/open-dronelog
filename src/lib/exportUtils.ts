@@ -139,18 +139,18 @@ export function buildCsv(data: FlightDataResponse, unitPrefs?: UnitPreferences):
     'time_s',
     'lat',
     'lng',
-    'alt_m',
-    'distance_to_home_m',
-    'height_m',
-    'vps_height_m',
-    'altitude_m',
-    'speed_ms',
-    'velocity_x_ms',
-    'velocity_y_ms',
-    'velocity_z_ms',
+    isAltImp ? 'alt_ft' : 'alt_m',
+    isDistImp ? 'distance_to_home_ft' : 'distance_to_home_m',
+    isAltImp ? 'height_ft' : 'height_m',
+    isAltImp ? 'vps_height_ft' : 'vps_height_m',
+    isAltImp ? 'altitude_ft' : 'altitude_m',
+    isSpeedImp ? 'speed_mph' : 'speed_ms',
+    isSpeedImp ? 'velocity_x_mph' : 'velocity_x_ms',
+    isSpeedImp ? 'velocity_y_mph' : 'velocity_y_ms',
+    isSpeedImp ? 'velocity_z_mph' : 'velocity_z_ms',
     'battery_percent',
     'battery_voltage_v',
-    'battery_temp_c',
+    isTempImp ? 'battery_temp_f' : 'battery_temp_c',
     'cell_voltages',
     'satellites',
     'rc_signal',
@@ -230,8 +230,11 @@ export function buildCsv(data: FlightDataResponse, unitPrefs?: UnitPreferences):
   };
 
   /** Format telemetry value with appropriate precision based on field type */
-  const getMetric = (arr: (number | null)[] | undefined, index: number, decimals = 2): string => {
-    const val = arr?.[index];
+  const getMetric = (arr: (number | null)[] | undefined, index: number, decimals = 2, multiplier = 1): string => {
+    let val = arr?.[index];
+    if (val != null) {
+      val *= multiplier;
+    }
     return formatNum(val, decimals);
   };
 
@@ -267,16 +270,17 @@ export function buildCsv(data: FlightDataResponse, unitPrefs?: UnitPreferences):
       formatCoord(lng),                              // lng - full precision (DOUBLE)
       formatNum(!isAltImp ? alt : (alt != null ? alt * mToFt : null), 2),                             // alt_m
       formatNum(!isDistImp ? distanceToHome[index] : (distanceToHome[index] != null ? distanceToHome[index]! * mToFt : null), 2),           // distance_to_home_m
-      getMetric(!isAltImp ? telemetry.height : telemetry.height?.map(v => v != null ? v * mToFt : null), index, 2),         // height_m
-      getMetric(!isAltImp ? telemetry.vpsHeight : telemetry.vpsHeight?.map(v => v != null ? v * mToFt : null), index, 2),      // vps_height_m
-      getMetric(!isAltImp ? telemetry.altitude : telemetry.altitude?.map(v => v != null ? v * mToFt : null), index, 2),       // altitude_m
-      getMetric(!isSpeedImp ? telemetry.speed : telemetry.speed?.map(v => v != null ? v * msToMph : null), index, 2),          // speed_ms
-      getMetric(!isSpeedImp ? telemetry.velocityX : telemetry.velocityX?.map(v => v != null ? v * msToMph : null), index, 2),      // velocity_x_ms
-      getMetric(!isSpeedImp ? telemetry.velocityY : telemetry.velocityY?.map(v => v != null ? v * msToMph : null), index, 2),      // velocity_y_ms
-      getMetric(!isSpeedImp ? telemetry.velocityZ : telemetry.velocityZ?.map(v => v != null ? v * msToMph : null), index, 2),      // velocity_z_ms
+      // Compute unit versions on demand
+      getMetric(telemetry.height, index, 2, isAltImp ? mToFt : 1),         // height_m
+      getMetric(telemetry.vpsHeight, index, 2, isAltImp ? mToFt : 1),      // vps_height_m
+      getMetric(telemetry.altitude, index, 2, isAltImp ? mToFt : 1),       // altitude_m
+      getMetric(telemetry.speed, index, 2, isSpeedImp ? msToMph : 1),          // speed_ms
+      getMetric(telemetry.velocityX, index, 2, isSpeedImp ? msToMph : 1),      // velocity_x_ms
+      getMetric(telemetry.velocityY, index, 2, isSpeedImp ? msToMph : 1),      // velocity_y_ms
+      getMetric(telemetry.velocityZ, index, 2, isSpeedImp ? msToMph : 1),      // velocity_z_ms
       getValue(telemetry.battery, index),            // battery_percent (integer)
-      getMetric(telemetry.batteryVoltage, index, 3), // battery_voltage_v
-      getMetric(!isTempImp ? telemetry.batteryTemp : telemetry.batteryTemp?.map(v => v != null ? cToF(v) : null), index, 1),    // battery_temp_c
+      getMetric(telemetry.batteryVoltage, index, 3, 1), // battery_voltage_v
+      formatNum(!isTempImp ? telemetry.batteryTemp?.[index] : (telemetry.batteryTemp?.[index] != null ? cToF(telemetry.batteryTemp[index]!) : null), 1),    // battery_temp_c
       getArrayValue(telemetry.cellVoltages, index),  // cell_voltages (JSON)
       getValue(telemetry.satellites, index),         // satellites (integer)
       getValue(telemetry.rcSignal, index),           // rc_signal (integer)
