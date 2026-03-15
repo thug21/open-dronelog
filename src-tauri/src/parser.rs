@@ -881,12 +881,13 @@ impl<'a> LogParser<'a> {
         let has_fly_time = frames.iter().any(|f| f.osd.fly_time > 0.0);
         log::debug!("fly_time available: {}", has_fly_time);
 
-        // When fly_time is unavailable, compute interval from header duration
-        // instead of assuming 100ms (10Hz), which inflates duration for high-rate logs
-        let fallback_interval_ms: i64 = if !has_fly_time && details_total_time_secs > 0.0 && !frames.is_empty() {
-            ((details_total_time_secs * 1000.0) / frames.len() as f64).round() as i64
+        // Derive frame cadence from parser-reported total duration when available.
+        // This keeps timestamp progression aligned with real frame rate even when
+        // fly_time is coarse (repeated) and prevents timeline inflation on >10Hz logs.
+        let fallback_interval_ms: i64 = if details_total_time_secs > 0.0 && frames.len() > 1 {
+            (((details_total_time_secs * 1000.0) / (frames.len() - 1) as f64).round() as i64).max(1)
         } else {
-            100 // default 10Hz assumption
+            100 // conservative fallback when cadence cannot be estimated
         };
 
         let mut prev_is_photo = false;
@@ -1153,14 +1154,12 @@ impl<'a> LogParser<'a> {
         let mut messages = Vec::new();
         let mut timestamp_ms: i64 = 0;
 
-        // Check if any frame has a non-zero fly_time
-        let has_fly_time = frames.iter().any(|f| f.osd.fly_time > 0.0);
-
-        // When fly_time is unavailable, compute interval from header duration
-        let fallback_interval_ms: i64 = if !has_fly_time && details_total_time_secs > 0.0 && !frames.is_empty() {
-            ((details_total_time_secs * 1000.0) / frames.len() as f64).round() as i64
+        // Keep message timestamps on the same cadence as telemetry so exports and
+        // annotations stay aligned on high-rate logs.
+        let fallback_interval_ms: i64 = if details_total_time_secs > 0.0 && frames.len() > 1 {
+            (((details_total_time_secs * 1000.0) / (frames.len() - 1) as f64).round() as i64).max(1)
         } else {
-            100 // default 10Hz assumption
+            100 // conservative fallback when cadence cannot be estimated
         };
 
         // ----------------------------------------------------------------
