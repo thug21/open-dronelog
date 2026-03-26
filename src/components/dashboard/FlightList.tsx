@@ -119,12 +119,14 @@ function smoothScrollToElement(
 }
 
 const FILTER_PROFILES_SETTING_KEY = 'flight_list_filter_profiles_v1';
+const TAG_FILTER_MODE_STORAGE_KEY = 'flight_list_tag_filter_mode_v1';
 
 interface SavedFilterSnapshot {
   selectedDrones: string[];
   selectedBatteries: string[];
   selectedControllers: string[];
   selectedTags: string[];
+  tagFilterMode: 'and' | 'or';
   selectedColors: string[];
   photoFilterMin: number;
   videoFilterMin: number;
@@ -161,11 +163,13 @@ function asNonNegativeInteger(value: unknown, fallback: number = 0): number {
 function normalizeSavedFilterSnapshot(value: unknown): SavedFilterSnapshot | null {
   if (!value || typeof value !== 'object') return null;
   const obj = value as Record<string, unknown>;
+  const tagFilterMode = obj.tagFilterMode === 'and' ? 'and' : 'or';
   return {
     selectedDrones: asStringArray(obj.selectedDrones),
     selectedBatteries: asStringArray(obj.selectedBatteries),
     selectedControllers: asStringArray(obj.selectedControllers),
     selectedTags: asStringArray(obj.selectedTags),
+    tagFilterMode,
     selectedColors: asStringArray(obj.selectedColors),
     photoFilterMin: asNonNegativeInteger(obj.photoFilterMin),
     videoFilterMin: asNonNegativeInteger(obj.videoFilterMin),
@@ -271,6 +275,11 @@ export function FlightList({
   const [selectedBatteries, setSelectedBatteries] = useState<string[]>([]);
   const [selectedControllers, setSelectedControllers] = useState<string[]>([]);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [tagFilterMode, setTagFilterMode] = useState<'and' | 'or'>(() => {
+    if (typeof localStorage === 'undefined') return 'or';
+    const stored = localStorage.getItem(TAG_FILTER_MODE_STORAGE_KEY);
+    return stored === 'and' ? 'and' : 'or';
+  });
 
   // For keyboard navigation: preview ID for visual highlighting before Enter confirms selection
   const [previewFlightId, setPreviewFlightId] = useState<number | null>(null);
@@ -414,6 +423,7 @@ export function FlightList({
     setSelectedBatteries(snapshot.selectedBatteries);
     setSelectedControllers(snapshot.selectedControllers);
     setSelectedTags(snapshot.selectedTags);
+    setTagFilterMode(snapshot.tagFilterMode);
     setSelectedColors(snapshot.selectedColors);
     setPhotoFilterMin(snapshot.photoFilterMin);
     setVideoFilterMin(snapshot.videoFilterMin);
@@ -440,6 +450,7 @@ export function FlightList({
     selectedBatteries,
     selectedControllers,
     selectedTags,
+    tagFilterMode,
     selectedColors,
     photoFilterMin,
     videoFilterMin,
@@ -456,6 +467,7 @@ export function FlightList({
     selectedBatteries,
     selectedControllers,
     selectedTags,
+    tagFilterMode,
     selectedColors,
     photoFilterMin,
     videoFilterMin,
@@ -512,6 +524,22 @@ export function FlightList({
       cancelled = true;
     };
   }, [activeProfile]);
+
+  // Persist current tag matching mode and restore it when profile changes.
+  useEffect(() => {
+    if (typeof localStorage === 'undefined') return;
+    const key = `${TAG_FILTER_MODE_STORAGE_KEY}:${activeProfile}`;
+    const stored = localStorage.getItem(key) ?? localStorage.getItem(TAG_FILTER_MODE_STORAGE_KEY);
+    setTagFilterMode(stored === 'and' ? 'and' : 'or');
+  }, [activeProfile]);
+
+  useEffect(() => {
+    if (typeof localStorage === 'undefined') return;
+    const key = `${TAG_FILTER_MODE_STORAGE_KEY}:${activeProfile}`;
+    localStorage.setItem(key, tagFilterMode);
+    // Backward-compatible fallback key for users upgrading from old builds.
+    localStorage.setItem(TAG_FILTER_MODE_STORAGE_KEY, tagFilterMode);
+  }, [activeProfile, tagFilterMode]);
 
   const handleSelectFilterProfile = useCallback((profileName: string) => {
     if (profileName === 'none') {
@@ -596,6 +624,7 @@ export function FlightList({
     selectedBatteries,
     selectedControllers,
     selectedTags,
+    tagFilterMode,
     selectedColors,
     photoFilterMin,
     videoFilterMin,
@@ -782,7 +811,10 @@ export function FlightList({
         // Tags filter
         if (exclude !== 'tags' && selectedTags.length > 0) {
           const flightTagNames = (flight.tags ?? []).map(t => typeof t === 'string' ? t : t.tag);
-          if (!selectedTags.some((tag) => flightTagNames.includes(tag))) return false;
+          const matchesTags = tagFilterMode === 'and'
+            ? selectedTags.every((tag) => flightTagNames.includes(tag))
+            : selectedTags.some((tag) => flightTagNames.includes(tag));
+          if (!matchesTags) return false;
         }
         // Color filter
         if (exclude !== 'color' && selectedColors.length > 0) {
@@ -822,7 +854,7 @@ export function FlightList({
       forPhoto: applyFilters('photo'),
       forVideo: applyFilters('video'),
     };
-  }, [flights, dateRange, selectedDrones, selectedBatteries, selectedControllers, durationFilterMin, durationFilterMax, altitudeFilterMin, altitudeFilterMax, distanceFilterMin, distanceFilterMax, selectedTags, selectedColors, photoFilterMin, videoFilterMin, mapAreaFilterEnabled, mapVisibleBounds, batteryPairIndex]);
+  }, [flights, dateRange, selectedDrones, selectedBatteries, selectedControllers, durationFilterMin, durationFilterMax, altitudeFilterMin, altitudeFilterMax, distanceFilterMin, distanceFilterMax, selectedTags, tagFilterMode, selectedColors, photoFilterMin, videoFilterMin, mapAreaFilterEnabled, mapVisibleBounds, batteryPairIndex]);
 
   const mediaMaxima = useMemo(() => {
     let maxPhotos = 0;
@@ -1231,10 +1263,13 @@ export function FlightList({
         if (isFilterInverted ? matchesDistance : !matchesDistance) return false;
       }
 
-      // Tag filter: normal = flight must have ANY selected tag; inverted = must have NONE
+      // Tag filter: normal = flight must satisfy selected tag mode (AND/OR);
+      // inverted = flight must fail selected tag mode.
       if (selectedTags.length > 0) {
         const flightTagNames = (flight.tags ?? []).map(t => typeof t === 'string' ? t : t.tag);
-        const matchesTags = selectedTags.some((tag) => flightTagNames.includes(tag));
+        const matchesTags = tagFilterMode === 'and'
+          ? selectedTags.every((tag) => flightTagNames.includes(tag))
+          : selectedTags.some((tag) => flightTagNames.includes(tag));
         if (isFilterInverted ? matchesTags : !matchesTags) return false;
       }
 
@@ -1274,7 +1309,7 @@ export function FlightList({
 
       return true;
     });
-  }, [dateRange, flights, selectedBatteries, selectedControllers, selectedDrones, durationFilterMin, durationFilterMax, altitudeFilterMin, altitudeFilterMax, distanceFilterMin, distanceFilterMax, selectedTags, selectedColors, photoFilterMin, videoFilterMin, isFilterInverted, mapAreaFilterEnabled, mapVisibleBounds, searchQuery, batteryPairIndex]);
+  }, [dateRange, flights, selectedBatteries, selectedControllers, selectedDrones, durationFilterMin, durationFilterMax, altitudeFilterMin, altitudeFilterMax, distanceFilterMin, distanceFilterMax, selectedTags, tagFilterMode, selectedColors, photoFilterMin, videoFilterMin, isFilterInverted, mapAreaFilterEnabled, mapVisibleBounds, searchQuery, batteryPairIndex]);
 
   const batteryLabelByKey = useMemo(() => {
     const map = new Map<string, string>();
@@ -2891,7 +2926,7 @@ export function FlightList({
                             </span>
                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0"><polyline points="6 9 12 15 18 9" /></svg>
                           </button>
-                          {isTagDropdownOpen && (
+                            {isTagDropdownOpen && (
                             <>
                               <div
                                 className="fixed inset-0 z-40"
@@ -3015,12 +3050,53 @@ export function FlightList({
                                 </div>
                               </div>
                             </>
-                          )}
-                        </div>
+                            )}
+                          </div>
+
+                          <div
+                            className={`h-8 rounded-lg border p-0.5 flex items-center gap-0.5 flex-shrink-0 ${isLight
+                              ? 'border-gray-300 bg-transparent'
+                              : 'border-gray-600/80 bg-gray-900/60'
+                              }`}
+                            role="group"
+                            aria-label={t('flightList.tagMatchMode', 'Tag match mode')}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => setTagFilterMode('and')}
+                              className={`h-full min-w-[2.25rem] px-2 rounded-md text-[10px] font-semibold transition-colors ${tagFilterMode === 'and'
+                                ? 'bg-sky-500 text-white'
+                                : isLight
+                                  ? 'text-gray-700 hover:bg-gray-200/70'
+                                  : 'text-gray-300 hover:bg-gray-700/70'
+                                }`}
+                              title={t('flightList.tagMatchAll', 'Require all selected tags')}
+                              aria-pressed={tagFilterMode === 'and'}
+                            >
+                              AND
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTagFilterMode('or')}
+                              className={`h-full min-w-[2.25rem] px-2 rounded-md text-[10px] font-semibold transition-colors ${tagFilterMode === 'or'
+                                ? 'bg-sky-500 text-white'
+                                : isLight
+                                  ? 'text-gray-700 hover:bg-gray-200/70'
+                                  : 'text-gray-300 hover:bg-gray-700/70'
+                                }`}
+                              title={t('flightList.tagMatchAny', 'Match any selected tag')}
+                              aria-pressed={tagFilterMode === 'or'}
+                            >
+                              OR
+                            </button>
+                          </div>
                       </div>
                     )}
 
-                    <div className="rounded-md border border-gray-700/70 bg-black/15 px-2 py-2 space-y-2">
+                    <div className={`rounded-md border px-2 py-2 space-y-2 ${isLight
+                      ? 'border-gray-300 bg-transparent'
+                      : 'border-gray-700/70 bg-black/15'
+                      }`}>
                       <p className="text-[11px] uppercase tracking-wide text-gray-400">{t('flightList.mediaGroup', 'Media')}</p>
                       <div className="grid grid-cols-[minmax(0,1fr)_82px_auto] items-center gap-2">
                         <label className="text-xs text-gray-300" htmlFor="photo-filter-min">{t('flightList.photos', 'Photos')}</label>
