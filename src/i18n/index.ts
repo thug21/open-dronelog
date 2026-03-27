@@ -12,6 +12,7 @@ import pt from './locales/pt.json';
 import ja from './locales/ja.json';
 import zh from './locales/zh.json';
 import ko from './locales/ko.json';
+import hu from './locales/hu.json';
 
 /**
  * Map BCP-47 locale codes (as stored in the flight store) to i18next language keys.
@@ -30,6 +31,7 @@ export const localeToLang: Record<string, string> = {
   'ja-JP': 'ja',
   'zh-CN': 'zh',
   'ko-KR': 'ko',
+  'hu-HU': 'hu',
 };
 
 const savedLang = localStorage.getItem('appLanguage') || 'en';
@@ -48,6 +50,7 @@ i18n.use(initReactI18next).init({
     ja: { translation: ja },
     zh: { translation: zh },
     ko: { translation: ko },
+    hu: { translation: hu },
   },
   lng: initialLang,
   fallbackLng: 'en',
