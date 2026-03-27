@@ -494,8 +494,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                       }, 0);
                     }}
                     options={[
-                      { value: '12h', label: '12-hour' },
-                      { value: '24h', label: '24-hour' },
+                      { value: '12h', label: t('settings.timeFormat12h', '12-hour') },
+                      { value: '24h', label: t('settings.timeFormat24h', '24-hour') },
                     ]}
                   />
                 </div>
