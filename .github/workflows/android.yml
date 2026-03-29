@@ -137,8 +137,12 @@ jobs:
             exit 1
           fi
 
+          if [ ! -x "$BUILD_TOOLS_DIR/zipalign" ] || [ ! -x "$BUILD_TOOLS_DIR/apksigner" ]; then
+            echo "zipalign/apksigner not found in $BUILD_TOOLS_DIR"
+            exit 1
+          fi
+
           echo "$BUILD_TOOLS_DIR" >> "$GITHUB_PATH"
-          "$BUILD_TOOLS_DIR/zipalign" -h >/dev/null
           "$BUILD_TOOLS_DIR/apksigner" --version >/dev/null
 
       - name: Sign release universal APK
