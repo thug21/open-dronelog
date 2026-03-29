@@ -1,9 +1,8 @@
 name: Android Release Artifacts
 
 on:
-  push:
-    tags:
-      - '*'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       build_aab:
