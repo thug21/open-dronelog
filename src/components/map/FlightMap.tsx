@@ -1123,7 +1123,7 @@ export function FlightMap({ track, homeLat, homeLon, durationSecs, telemetry, th
           widthMinPixels: Math.max(2, lineThickness),
           capRounded: true,
           jointRounded: true,
-          billboard: true,
+          billboard: false,
           opacity: 1,
           pickable: false,
           parameters: { depthTest: false },
