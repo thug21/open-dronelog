@@ -38,7 +38,7 @@ import { useIsMobileRuntime } from '@/hooks/platform/useIsMobileRuntime';
 const SYNC_FOLDER_KEY = 'syncFolderPath';
 const AUTOSCAN_KEY = 'autoscanEnabled';
 const MOBILE_SYNC_URI_KEY = 'mobileSyncFolderUri';
-const DEFAULT_ALLOWED_EXTENSIONS = ['txt', 'dat', 'log', 'csv'];
+const DEFAULT_ALLOWED_EXTENSIONS = ['txt', 'csv'];
 const STARTUP_SYNC_GUARD_PREFIX = 'startupSyncDone:';
 
 // Guard startup auto-sync across component remounts within the same app session.
