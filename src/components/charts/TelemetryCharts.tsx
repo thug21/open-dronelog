@@ -13,6 +13,7 @@ import { ensureAmPmUpperCase } from '@/lib/utils';
 import { useFlightStore } from '@/stores/flightStore';
 import { useTranslation } from 'react-i18next';
 import ColorPickerModal from '@/components/dashboard/ColorPickerModal';
+import { useIsMobileRuntime } from '@/hooks/platform/useIsMobileRuntime';
 
 /** Translation function type for passing to chart builders */
 type TFn = (key: string, options?: any) => string;
@@ -765,10 +766,25 @@ export function TelemetryCharts({ data, unitPrefs, startTime }: TelemetryChartsP
     return resolvedTheme;
   }, [resolvedTheme]);
 
+  const isMobileRuntime = useIsMobileRuntime();
   const isMobileCharts = typeof window !== 'undefined' && window.innerWidth < 768;
-  const [dragZoomActive, setDragZoomActive] = useState(!isMobileCharts);
+  const dragZoomAllowed = !isMobileRuntime && !isMobileCharts;
+  const [dragZoomActive, setDragZoomActive] = useState(dragZoomAllowed);
+
+  useEffect(() => {
+    if (dragZoomAllowed) return;
+    setDragZoomActive(false);
+    chartsRef.current.forEach((chart) => {
+      chart.dispatchAction({
+        type: 'takeGlobalCursor',
+        key: 'dataZoomSelect',
+        dataZoomSelectActive: false,
+      });
+    });
+  }, [dragZoomAllowed]);
 
   const toggleDragZoom = useCallback(() => {
+    if (!dragZoomAllowed) return;
     setDragZoomActive((prev) => {
       const next = !prev;
       chartsRef.current.forEach((chart) => {
@@ -780,7 +796,7 @@ export function TelemetryCharts({ data, unitPrefs, startTime }: TelemetryChartsP
       });
       return next;
     });
-  }, []);
+  }, [dragZoomAllowed]);
 
   const resetZoom = useCallback(() => {
     chartsRef.current.forEach((chart) => {
@@ -836,7 +852,7 @@ export function TelemetryCharts({ data, unitPrefs, startTime }: TelemetryChartsP
       // after setOption, before the toolbox dataZoom feature is ready to handle
       // the takeGlobalCursor action.
       // On mobile, drag-to-zoom interferes with normal touch scrolling.
-      if (!isMobileCharts) {
+      if (dragZoomAllowed) {
         requestAnimationFrame(() => {
           chart.dispatchAction({
             type: 'takeGlobalCursor',
@@ -846,7 +862,7 @@ export function TelemetryCharts({ data, unitPrefs, startTime }: TelemetryChartsP
         });
       }
     },
-    [syncZoom]
+    [dragZoomAllowed, syncZoom]
   );
 
   // Show vertical line indicator when map replay progress changes
@@ -1108,7 +1124,7 @@ export function TelemetryCharts({ data, unitPrefs, startTime }: TelemetryChartsP
         </button>
         <button
           onClick={toggleDragZoom}
-          className={`hidden md:inline-block text-xs border rounded px-2 py-1 transition-colors ${dragZoomActive
+          className={`${dragZoomAllowed ? 'hidden md:inline-block' : 'hidden'} text-xs border rounded px-2 py-1 transition-colors ${dragZoomActive
             ? 'text-drone-primary border-drone-primary/50 bg-drone-primary/10'
             : 'text-gray-400 hover:text-white border-gray-700'
             }`}

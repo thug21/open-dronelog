@@ -60,6 +60,13 @@ export function Dashboard() {
   const [isSidebarHidden, setIsSidebarHidden] = useState(false);
   // Start with null, determine collapsed state after flights are loaded from DB
   const [isImporterCollapsed, setIsImporterCollapsed] = useState<boolean | null>(null);
+  const [isFiltersCollapsed, setIsFiltersCollapsed] = useState(() => {
+    if (typeof localStorage !== 'undefined') {
+      const stored = localStorage.getItem('filtersCollapsed');
+      if (stored !== null) return stored === 'true';
+    }
+    return true;
+  });
   const [mainSplit, setMainSplit] = useState(50);
   const [mainPanelsWidth, setMainPanelsWidth] = useState(0);
   // Track if telemetry panel is collapsed (slider pulled past minimum width)
@@ -217,6 +224,20 @@ export function Dashboard() {
   }, []);
 
   useEffect(() => {
+    const handleFiltersCollapsedChange = (event: Event) => {
+      const customEvent = event as CustomEvent<{ collapsed?: boolean }>;
+      if (typeof customEvent.detail?.collapsed === 'boolean') {
+        setIsFiltersCollapsed(customEvent.detail.collapsed);
+      }
+    };
+
+    window.addEventListener('sidebarFiltersCollapsedChanged', handleFiltersCollapsedChange as EventListener);
+    return () => {
+      window.removeEventListener('sidebarFiltersCollapsedChanged', handleFiltersCollapsedChange as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
     if (activeView === 'overview') {
       loadOverview();
     }
@@ -224,6 +245,9 @@ export function Dashboard() {
 
   const appIcon = new URL('../../assets/icon.png', import.meta.url).href;
   const isImporterBusy = isImporting || isBatchProcessing || isImporterExternallyBusy;
+  const sidebarMinHeight = 620
+    + (isImporterCollapsed === false ? 120 : 0)
+    + (!isFiltersCollapsed ? 180 : 0);
 
   return (
     <div className={`flex h-full ${showSettings ? 'modal-open' : ''}`}>
@@ -233,9 +257,10 @@ export function Dashboard() {
       {/* Left Sidebar - Flight List */}
       {!isSidebarHidden && (
         <aside
-          className="bg-drone-secondary md:border-r border-gray-700 flex flex-col z-50 fixed inset-0 md:relative md:inset-auto mobile-safe-container"
+          className="bg-drone-secondary md:border-r border-gray-700 flex flex-col z-50 fixed inset-0 md:relative md:inset-auto mobile-safe-container h-full overflow-y-auto overflow-x-hidden"
           style={{ width: typeof window !== 'undefined' && window.innerWidth < 768 ? '100%' : sidebarWidth, minWidth: typeof window !== 'undefined' && window.innerWidth < 768 ? '100%' : 300 }}
         >
+          <div className="flex h-full flex-col" style={{ minHeight: sidebarMinHeight }}>
           <div className="p-4 border-b border-gray-700 flex items-center justify-between">
             <div>
               <h1 className="text-xl font-bold text-white flex items-center gap-2">
@@ -288,6 +313,13 @@ export function Dashboard() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                 </svg>
+              </button>
+              <button
+                onClick={() => setIsSidebarHidden(true)}
+                className="ml-1 bg-drone-secondary border border-gray-700 rounded-full w-6 h-6 flex items-center justify-center text-gray-300 hover:text-white hidden md:flex"
+                title={t('dashboard.hideSidebar')}
+              >
+                <span className="leading-none pb-[2px] text-lg">‹</span>
               </button>
             </div>
           </div>
@@ -496,13 +528,7 @@ export function Dashboard() {
               </a>
             )}
           </div>
-          <button
-            onClick={() => setIsSidebarHidden(true)}
-            className="absolute -right-3 top-1 bg-drone-secondary border border-gray-700 rounded-full w-6 h-6 text-gray-300 hover:text-white z-50 hidden md:block"
-            title={t('dashboard.hideSidebar')}
-          >
-            ‹
-          </button>
+
           {/* Mobile close + settings buttons for sidebar */}
           <div className="absolute right-4 mobile-safe-fixed-top flex items-center gap-2 z-50 md:hidden">
             {supporterBadgeActive && (
@@ -550,6 +576,7 @@ export function Dashboard() {
             }}
             className="absolute top-0 right-0 h-full w-1 cursor-col-resize bg-transparent hidden md:block"
           />
+          </div>
         </aside>
       )}
 

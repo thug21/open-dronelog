@@ -340,6 +340,12 @@ export function FlightList({
     }
     return true;
   });
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('sidebarFiltersCollapsedChanged', {
+      detail: { collapsed: isFiltersCollapsed },
+    }));
+  }, [isFiltersCollapsed]);
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
   const [exportHighlightedIndex, setExportHighlightedIndex] = useState(0);
   const [tagHighlightedIndex, setTagHighlightedIndex] = useState(0);
