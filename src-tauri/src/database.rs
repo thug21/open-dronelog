@@ -2700,9 +2700,23 @@ impl Database {
     /// Uses DuckDB's Parquet COPY for each table, then packs them into a single
     /// gzip-compressed tar archive.  The resulting `.db.backup` file is portable
     /// and can be restored with `import_backup`.
+    #[allow(dead_code)]
     pub fn export_backup(&self, dest_path: &std::path::Path) -> Result<(), DatabaseError> {
+        self.export_backup_with_progress(dest_path, |_, _| {})
+    }
+
+    /// Export backup with staged progress callbacks (0-100).
+    pub fn export_backup_with_progress<F>(
+        &self,
+        dest_path: &std::path::Path,
+        mut on_progress: F,
+    ) -> Result<(), DatabaseError>
+    where
+        F: FnMut(u8, &str),
+    {
         let start = std::time::Instant::now();
         log::info!("Starting database backup to {:?}", dest_path);
+        on_progress(5, "Preparing backup workspace");
 
         // Create a temp directory for the Parquet exports
         let temp_dir = std::env::temp_dir().join(format!("dji-logbook-backup-{}", uuid::Uuid::new_v4()));
@@ -2720,18 +2734,22 @@ impl Database {
         let customizations_path = temp_dir.join("flight_customizations.parquet");
         let settings_path = temp_dir.join("settings.parquet");
 
+        on_progress(10, "Exporting flights table");
         conn.execute_batch(&format!(
             "COPY flights    TO '{}' (FORMAT PARQUET, COMPRESSION ZSTD);",
             flights_path.to_string_lossy()
         ))?;
+        on_progress(25, "Exporting telemetry table");
         conn.execute_batch(&format!(
             "COPY telemetry  TO '{}' (FORMAT PARQUET, COMPRESSION ZSTD);",
             telemetry_path.to_string_lossy()
         ))?;
+        on_progress(35, "Exporting keychains table");
         conn.execute_batch(&format!(
             "COPY keychains  TO '{}' (FORMAT PARQUET, COMPRESSION ZSTD);",
             keychains_path.to_string_lossy()
         ))?;
+        on_progress(45, "Exporting optional tables");
         // Export tags table (ignore error if empty or doesn't exist)
         let _ = conn.execute_batch(&format!(
             "COPY flight_tags TO '{}' (FORMAT PARQUET, COMPRESSION ZSTD);",
@@ -2761,6 +2779,7 @@ impl Database {
         drop(conn); // release the lock while we tar
 
         // Pack the Parquet files into a gzip-compressed tar archive
+    on_progress(65, "Packaging backup archive");
         let dest_file = fs::File::create(dest_path)?;
         let gz = flate2::write::GzEncoder::new(dest_file, flate2::Compression::fast());
         let mut tar = tar::Builder::new(gz);
@@ -2779,7 +2798,10 @@ impl Database {
             .map_err(|e| DatabaseError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
         // Clean up temp dir
+        on_progress(90, "Cleaning up temporary files");
         let _ = fs::remove_dir_all(&temp_dir);
+
+        on_progress(100, "Backup complete");
 
         log::info!(
             "Database backup completed in {:.1}s → {:?}",
@@ -2793,9 +2815,23 @@ impl Database {
     ///
     /// Existing records are kept.  If a flight with the same ID already exists
     /// it is overwritten (its telemetry is replaced as well).
+    #[allow(dead_code)]
     pub fn import_backup(&self, src_path: &std::path::Path) -> Result<String, DatabaseError> {
+        self.import_backup_with_progress(src_path, |_, _| {})
+    }
+
+    /// Import backup with staged progress callbacks (0-100).
+    pub fn import_backup_with_progress<F>(
+        &self,
+        src_path: &std::path::Path,
+        mut on_progress: F,
+    ) -> Result<String, DatabaseError>
+    where
+        F: FnMut(u8, &str),
+    {
         let start = std::time::Instant::now();
         log::info!("Starting database restore from {:?}", src_path);
+        on_progress(5, "Preparing restore workspace");
 
         // Extract the tar.gz archive to a temp directory
         let temp_dir = std::env::temp_dir().join(format!("dji-logbook-restore-{}", uuid::Uuid::new_v4()));
@@ -2804,6 +2840,7 @@ impl Database {
         let file = fs::File::open(src_path)?;
         let gz = flate2::read::GzDecoder::new(file);
         let mut archive = tar::Archive::new(gz);
+        on_progress(15, "Extracting backup archive");
         archive.unpack(&temp_dir)
             .map_err(|e| DatabaseError::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to extract backup archive: {}", e))))?;
 
@@ -2822,6 +2859,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         // --- Restore flights ---
+        on_progress(30, "Restoring flights");
         // The flights table has multiple UNIQUE/PRIMARY KEY constraints (id + file_hash),
         // so INSERT OR REPLACE is not supported.  Delete matching rows first, then insert.
         conn.execute_batch(&format!(
@@ -2874,6 +2912,7 @@ impl Database {
         )?;
 
         // --- Restore telemetry ---
+        on_progress(45, "Restoring telemetry");
         if telemetry_path.exists() {
             // Get the set of flight IDs being restored so we can remove their
             // existing telemetry first (to handle overwrites cleanly).
@@ -2892,6 +2931,7 @@ impl Database {
         }
 
         // --- Restore keychains ---
+        on_progress(58, "Restoring keychains");
         if keychains_path.exists() {
             conn.execute_batch(&format!(
                 r#"
@@ -2903,6 +2943,7 @@ impl Database {
         }
 
         // --- Restore flight tags (backward compatible — may not exist in old backups) ---
+        on_progress(70, "Restoring tags and messages");
         let tags_path = temp_dir.join("flight_tags.parquet");
         if tags_path.exists() {
             let _ = conn.execute_batch(&format!(
@@ -2937,6 +2978,7 @@ impl Database {
         }
 
         // --- Restore equipment names (backward compatible — may not exist in old backups) ---
+        on_progress(82, "Restoring settings and customizations");
         let equipment_names_path = temp_dir.join("equipment_names.parquet");
         if equipment_names_path.exists() {
             let _ = conn.execute_batch(&format!(
@@ -2975,6 +3017,7 @@ impl Database {
         drop(conn);
 
         // Clean up temp dir
+        on_progress(94, "Cleaning up temporary files");
         let _ = fs::remove_dir_all(&temp_dir);
 
         let elapsed = start.elapsed().as_secs_f64();
@@ -2982,6 +3025,7 @@ impl Database {
             "Restored {} flights in {:.1}s",
             flights_restored, elapsed
         );
+        on_progress(100, "Restore complete");
         log::info!("{}", msg);
         Ok(msg)
     }

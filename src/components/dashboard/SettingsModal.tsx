@@ -19,8 +19,15 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
+interface BackupProgressEvent {
+  operation: 'export' | 'import';
+  percent: number;
+  stage: string;
+}
+
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const { t } = useTranslation();
+  const webMode = isWebMode();
   const [apiKey, setApiKey] = useState('');
   const [hasKey, setHasKey] = useState(false);
   const [apiKeyType, setApiKeyType] = useState<'none' | 'default' | 'personal'>('none');
@@ -33,6 +40,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [blacklistCount, setBlacklistCount] = useState(0);
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
+  const [backupProgress, setBackupProgress] = useState<BackupProgressEvent | null>(null);
+  const [fallbackProgress, setFallbackProgress] = useState(0);
   const [isDeleting, setIsDeleting] = useState(false);
   const [confirmRemoveAutoTags, setConfirmRemoveAutoTags] = useState(false);
   const [enabledTagTypes, setEnabledTagTypes] = useState<SmartTagTypeId[]>(() => getEnabledSmartTagTypes());
@@ -95,6 +104,54 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [badgeCode, setBadgeCode] = useState('');
   const [badgeMessage, setBadgeMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [unitsDropdownOpen, setUnitsDropdownOpen] = useState(false);
+
+  useEffect(() => {
+    if (webMode) return;
+
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+
+    (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        if (disposed) return;
+        unlisten = await listen<BackupProgressEvent>('backup-progress', (event) => {
+          const payload = event.payload;
+          setBackupProgress({
+            operation: payload.operation,
+            percent: Math.max(0, Math.min(100, Math.round(payload.percent))),
+            stage: payload.stage || '',
+          });
+        });
+      } catch (err) {
+        console.warn('Failed to subscribe to backup progress events', err);
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, [webMode]);
+
+  useEffect(() => {
+    const needsFallback = isDeleting;
+    if (!needsFallback) {
+      setFallbackProgress(0);
+      return;
+    }
+
+    setFallbackProgress((prev) => (prev > 0 ? prev : 8));
+    const timer = setInterval(() => {
+      setFallbackProgress((prev) => {
+        if (prev >= 92) return 92;
+        const delta = Math.max(1, Math.round((92 - prev) * 0.18));
+        return Math.min(92, prev + delta);
+      });
+    }, 300);
+
+    return () => clearInterval(timer);
+  }, [isDeleting]);
 
   // Derive light/dark for theme-aware styling
   const isLight = themeMode === 'light' || (themeMode === 'system' && typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: light)').matches);
@@ -265,6 +322,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const handleBackup = async () => {
     setIsBackingUp(true);
     setMessage(null);
+    if (!webMode) {
+      setBackupProgress({ operation: 'export', percent: 0, stage: 'Starting backup' });
+    }
     try {
       const success = await api.backupDatabase();
       if (success) {
@@ -275,12 +335,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       setMessage({ type: 'error', text: `Backup failed: ${err}` });
     } finally {
       setIsBackingUp(false);
+      setBackupProgress(null);
     }
   };
 
   const handleRestore = async () => {
     setIsRestoring(true);
     setMessage(null);
+    if (!webMode) {
+      setBackupProgress({ operation: 'import', percent: 0, stage: 'Starting restore' });
+    }
     try {
       if (api.isWebMode()) {
         // Web mode: pick file via browser dialog
@@ -308,6 +372,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       setMessage({ type: 'error', text: `Restore failed: ${err}` });
     } finally {
       setIsRestoring(false);
+      setBackupProgress(null);
     }
   };
 
@@ -346,6 +411,32 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 </>
               )}
             </p>
+            {!webMode && (isBackingUp || isRestoring) && backupProgress && (
+              <div className="mt-3 w-72 max-w-[80vw]">
+                <div className="h-2 rounded-full bg-gray-300/70 dark:bg-gray-700/70 overflow-hidden">
+                  <div
+                    className="h-full bg-sky-500 transition-all duration-200"
+                    style={{ width: `${backupProgress.percent}%` }}
+                  />
+                </div>
+                <p className="mt-1 text-xs text-gray-700 dark:text-gray-400 text-center">
+                  {backupProgress.stage || (isBackingUp ? t('settings.exportingBackup') : t('settings.restoringBackup'))} ({backupProgress.percent}%)
+                </p>
+              </div>
+            )}
+            {isDeleting && (
+              <div className="mt-3 w-72 max-w-[80vw]">
+                <div className="h-2 rounded-full bg-gray-300/70 dark:bg-gray-700/70 overflow-hidden">
+                  <div
+                    className="h-full bg-sky-500 transition-all duration-300"
+                    style={{ width: `${fallbackProgress}%` }}
+                  />
+                </div>
+                <p className="mt-1 text-xs text-gray-700 dark:text-gray-400 text-center">
+                  {t('settings.deletingAllLogs')} ({fallbackProgress}%)
+                </p>
+              </div>
+            )}
           </div>
         )}
 

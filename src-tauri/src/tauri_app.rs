@@ -1,9 +1,10 @@
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, RwLock};
 
-    use tauri::{AppHandle, Manager, State};
+    use tauri::{AppHandle, Emitter, Manager, State};
     use tauri_plugin_log::{Target, TargetKind};
     use log::LevelFilter;
+    use serde::Serialize;
 
     use crate::database::{self, Database, DatabaseError};
     use crate::models::{
@@ -20,6 +21,22 @@
         pub data_dir: PathBuf,
         /// When true, data commands are blocked until the user authenticates.
         locked: RwLock<bool>,
+    }
+
+    #[derive(Serialize, Clone)]
+    struct BackupProgressPayload {
+        operation: String,
+        percent: u8,
+        stage: String,
+    }
+
+    fn emit_backup_progress(app: &AppHandle, operation: &str, percent: u8, stage: &str) {
+        let payload = BackupProgressPayload {
+            operation: operation.to_string(),
+            percent,
+            stage: stage.to_string(),
+        };
+        let _ = app.emit("backup-progress", payload);
     }
 
     impl AppState {
@@ -908,61 +925,81 @@
     }
 
     #[tauri::command]
-    pub async fn export_backup(dest_path: String, state: State<'_, AppState>) -> Result<bool, String> {
+    pub async fn export_backup(dest_path: String, app: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
         let path = std::path::PathBuf::from(&dest_path);
         log::info!("Exporting database backup to: {}", dest_path);
+        emit_backup_progress(&app, "export", 0, "Starting backup");
         state
             .db_authenticated()?
-            .export_backup(&path)
+            .export_backup_with_progress(&path, |percent, stage| {
+                emit_backup_progress(&app, "export", percent, stage);
+            })
             .map(|_| true)
             .map_err(|e| format!("Failed to export backup: {}", e))
     }
 
     #[tauri::command]
-    pub async fn export_backup_bytes(state: State<'_, AppState>) -> Result<Vec<u8>, String> {
+    pub async fn export_backup_bytes(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<u8>, String> {
         let temp_path = std::env::temp_dir().join(format!(
             "open-dronelog-backup-{}.backup",
             uuid::Uuid::new_v4()
         ));
 
+        emit_backup_progress(&app, "export", 0, "Starting backup");
+
         state
             .db_authenticated()?
-            .export_backup(&temp_path)
+            .export_backup_with_progress(&temp_path, |percent, stage| {
+                emit_backup_progress(&app, "export", percent, stage);
+            })
             .map_err(|e| format!("Failed to export backup: {}", e))?;
+
+        emit_backup_progress(&app, "export", 96, "Reading backup bytes");
 
         let bytes = std::fs::read(&temp_path)
             .map_err(|e| format!("Failed to read temporary backup file: {}", e))?;
 
         let _ = std::fs::remove_file(&temp_path);
+        emit_backup_progress(&app, "export", 100, "Backup complete");
         Ok(bytes)
     }
 
     #[tauri::command]
-    pub async fn import_backup(src_path: String, state: State<'_, AppState>) -> Result<String, String> {
+    pub async fn import_backup(src_path: String, app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
         let path = std::path::PathBuf::from(&src_path);
         log::info!("Importing database backup from: {}", src_path);
+        emit_backup_progress(&app, "import", 0, "Starting restore");
         state
             .db_authenticated()?
-            .import_backup(&path)
+            .import_backup_with_progress(&path, |percent, stage| {
+                emit_backup_progress(&app, "import", percent, stage);
+            })
             .map_err(|e| format!("Failed to import backup: {}", e))
     }
 
     #[tauri::command]
-    pub async fn import_backup_bytes(data: Vec<u8>, state: State<'_, AppState>) -> Result<String, String> {
+    pub async fn import_backup_bytes(data: Vec<u8>, app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
         let temp_path = std::env::temp_dir().join(format!(
             "open-dronelog-restore-{}.backup",
             uuid::Uuid::new_v4()
         ));
+
+        emit_backup_progress(&app, "import", 0, "Preparing restore file");
 
         std::fs::write(&temp_path, data)
             .map_err(|e| format!("Failed to write temporary restore file: {}", e))?;
 
         let result = state
             .db_authenticated()?
-            .import_backup(&temp_path)
+            .import_backup_with_progress(&temp_path, |percent, stage| {
+                emit_backup_progress(&app, "import", percent, stage);
+            })
             .map_err(|e| format!("Failed to import backup: {}", e));
 
         let _ = std::fs::remove_file(&temp_path);
+        if result.is_ok() {
+            emit_backup_progress(&app, "import", 100, "Restore complete");
+        }
         result
     }
 
