@@ -676,7 +676,7 @@ export function Dashboard() {
                 <div id="main-panels" className={`flex-1 md:min-h-[620px] flex flex-col ${shouldStackPanels ? '' : 'md:flex-row'} gap-4 p-4 overflow-visible ${shouldStackPanels ? '' : 'md:overflow-hidden'}`}>
                   {/* Telemetry Charts - when collapsed, content clips instead of squeezing */}
                   <div
-                    className={`card flex flex-col min-h-[400px] md:min-h-[520px] md:max-h-[720px] relative ${isTelemetryCollapsed ? 'overflow-hidden' : 'overflow-hidden'}`}
+                    className={`card flex flex-col min-h-[400px] md:min-h-[520px] ${isDesktopLayout && !shouldStackPanels ? 'md:h-full' : 'md:max-h-[720px]'} relative ${isTelemetryCollapsed ? 'overflow-hidden' : 'overflow-hidden'}`}
                     style={{
                       flexBasis: isDesktopLayout && !shouldStackPanels ? `${mainSplit}%` : 'auto',
                       flexGrow: isDesktopLayout && !shouldStackPanels ? 0 : 1,
@@ -760,7 +760,7 @@ export function Dashboard() {
 
                   {/* Flight Map */}
                   <div
-                    className={`card flex flex-col ${isDesktopLayout && !shouldStackPanels ? 'h-[648px] md:h-auto' : 'h-[648px]'} md:min-h-[520px] md:max-h-[720px] overflow-hidden`}
+                    className={`card flex flex-col ${isDesktopLayout && !shouldStackPanels ? 'md:h-full' : 'h-[648px]'} md:min-h-[520px] ${isDesktopLayout && !shouldStackPanels ? '' : 'md:max-h-[720px]'} overflow-hidden`}
                     style={{
                       flexBasis: isDesktopLayout && !shouldStackPanels ? 'auto' : 'auto',
                       flexGrow: isDesktopLayout && !shouldStackPanels ? 1 : 0,
