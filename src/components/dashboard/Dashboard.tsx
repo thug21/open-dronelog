@@ -75,7 +75,8 @@ export function Dashboard() {
   const [isImporterExternallyBusy, setIsImporterExternallyBusy] = useState(false);
   // Width of telemetry panel when collapsed (minimum visible width)
   const TELEMETRY_MIN_VISIBLE_WIDTH = 40;
-  const TELEMETRY_MIN_NORMAL_WIDTH = 720;
+  const TELEMETRY_MIN_NORMAL_WIDTH = 560;
+  const TELEMETRY_SCROLL_MIN_WIDTH = 560;
   const TELEMETRY_CARD_MIN_WIDTH = 520;
   const MAP_MIN_WIDTH = 320;
   const MAP_STACK_TRIGGER_WIDTH = 420;
@@ -670,8 +671,8 @@ export function Dashboard() {
           </div>
         ) : currentFlightData ? (
           <>
-              <div className="w-full h-full min-h-0 overflow-auto">
-                <div className={`w-full min-w-[720px] ${shouldStackPanels ? '' : 'lg:min-w-[1100px]'} min-h-full md:min-h-[780px] flex flex-col`}>
+              <div className="w-full h-full min-h-0 overflow-y-auto overflow-x-hidden">
+                <div className="w-full min-h-full md:min-h-[780px] flex flex-col">
                 {/* Stats Bar */}
                 <FlightStats data={currentFlightData} />
 
@@ -742,7 +743,7 @@ export function Dashboard() {
                       <div
                         className="min-h-full"
                         style={{
-                          minWidth: isDesktopLayout && !shouldStackPanels ? TELEMETRY_MIN_NORMAL_WIDTH : '600px',
+                          minWidth: isDesktopLayout && !shouldStackPanels ? TELEMETRY_MIN_NORMAL_WIDTH : `${TELEMETRY_SCROLL_MIN_WIDTH}px`,
                           width: isDesktopLayout && !shouldStackPanels ? (isTelemetryCollapsed ? TELEMETRY_MIN_NORMAL_WIDTH : '100%') : '100%',
                         }}
                       >
