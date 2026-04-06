@@ -249,7 +249,7 @@ export function ProfileSelector() {
       </button>
 
       {open && (
-        <div className="absolute right-0 sm:left-0 sm:right-auto top-full mt-1 w-56 max-w-[calc(100vw-1rem)] bg-drone-secondary border border-gray-700 rounded-lg shadow-xl z-[100] overflow-hidden">
+        <div className="absolute right-0 top-full mt-1 w-56 max-w-[calc(100vw-1rem)] bg-drone-secondary border border-gray-700 rounded-lg shadow-xl z-[100] overflow-hidden">
 
           {/* ── Password prompt for switching ── */}
           {passwordPrompt && !confirmingDelete && (
