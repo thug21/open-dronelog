@@ -124,6 +124,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Start from a clean workspace so collected artifacts are from this run only.
+          rm -rf src-tauri/target target unsigned signed release-assets
           npm run tauri build -- --target "${{ matrix.target }}" --bundles nsis,msi --verbose
 
       - name: Collect unsigned Windows artifacts
@@ -173,6 +175,15 @@ jobs:
           ls -la unsigned/exe
           ls -la unsigned/msi
           ls -la unsigned/other || true
+
+          # Capture exact files and hashes that are submitted to SignPath.
+          {
+            echo "# Unsigned EXE inputs"
+            find unsigned/exe -type f -name '*.exe' -print0 | sort -z | xargs -0 sha256sum
+            echo
+            echo "# Unsigned MSI inputs"
+            find unsigned/msi -type f -name '*.msi' -print0 | sort -z | xargs -0 sha256sum
+          } | tee unsigned/manifest-sha256.txt
 
       - name: Upload unsigned .exe as workflow artifact
         if: runner.os == 'Windows' && needs.resolve-tag.outputs.sign_windows == 'true'
