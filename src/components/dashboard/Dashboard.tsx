@@ -670,13 +670,13 @@ export function Dashboard() {
           </div>
         ) : currentFlightData ? (
           <>
-            <div className="w-full h-full overflow-auto">
-              <div className="w-full min-w-0 md:min-w-[700px] lg:min-w-[1100px] min-h-full md:min-h-[780px] flex flex-col">
+            <div className="w-full h-full min-h-0 overflow-y-auto overflow-x-hidden">
+              <div className={`w-full min-w-0 md:min-w-[700px] ${shouldStackPanels ? '' : 'lg:min-w-[1100px]'} min-h-full md:min-h-[780px] flex flex-col`}>
                 {/* Stats Bar */}
                 <FlightStats data={currentFlightData} />
 
                 {/* Charts and Map Grid */}
-                <div id="main-panels" className={`flex-1 md:min-h-[620px] flex flex-col ${shouldStackPanels ? '' : 'md:flex-row'} gap-4 p-4 overflow-visible ${shouldStackPanels ? '' : 'md:overflow-hidden'}`}>
+                <div id="main-panels" className={`${shouldStackPanels ? 'flex-none' : 'flex-1'} md:min-h-[620px] flex flex-col ${shouldStackPanels ? '' : 'md:flex-row'} gap-4 p-4 overflow-visible ${shouldStackPanels ? '' : 'md:overflow-hidden'}`}>
                   {/* Telemetry Charts - when collapsed, content clips instead of squeezing */}
                   <div
                     className={`card flex flex-col min-h-[400px] md:min-h-[520px] relative ${isTelemetryCollapsed ? 'overflow-hidden' : 'overflow-hidden'}`}
