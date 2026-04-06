@@ -137,9 +137,31 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          ROOT="src-tauri/target/$TARGET/release"
-
           mkdir -p unsigned/exe unsigned/msi unsigned/other
+
+          # Resolve release output directory across possible cargo target layouts.
+          CANDIDATES=(
+            "src-tauri/target/$TARGET/release"
+            "src-tauri/target/release"
+            "target/$TARGET/release"
+            "target/release"
+          )
+
+          ROOT=""
+          for CANDIDATE in "${CANDIDATES[@]}"; do
+            if [ -d "$CANDIDATE" ]; then
+              ROOT="$CANDIDATE"
+              break
+            fi
+          done
+
+          if [ -z "$ROOT" ]; then
+            echo "::error::Could not find Windows release output directory"
+            echo "Checked: ${CANDIDATES[*]}"
+            exit 1
+          fi
+
+          echo "Using release output root: $ROOT"
 
           # NSIS installer(s)
           if [ -d "$ROOT/bundle/nsis" ]; then
