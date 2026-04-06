@@ -109,7 +109,7 @@ You can sync your DJI flight logs directly from the mobile (Android/iPhone) or R
 
 #### Download Here - [Windows](https://apps.microsoft.com/detail/9mz7gp4zqlhj) | [MacOS](https://litchi-apks.s3.us-east-1.amazonaws.com/Litchi-Hub-Bridge-mac.dmg)
 
-After installation, run it and check the tray menu (it usually gets minimizedto tray after start) - Right click on tray icon and pick settings - Check the `Start with Windows` in `General` tab and go to `Flight Logs Sync` tab to pick a local folder where the logs will be synced. Select the `Auto sync on device connection` for a seamless experience. After this setup, as soon as you plug in your RC or Android/iPhone (should be unlocked and mounted to your desktop/laptop) which you use to fly your drones, it will automatically search for the relevant folders and copy the .txt logs from there to your selected local folder. 
+After installation, run it and check the tray menu (it usually gets minimizedto tray after start) - Right click on tray icon and pick settings - Check the `Start with Windows` in `General` tab and go to `Flight Logs Sync` tab to pick a local folder where the logs will be synced. Select the `Auto-sync when a device connects` for a seamless experience. After this setup, as soon as you plug in your RC or Android/iPhone (should be unlocked and mounted to your desktop/laptop) which you use to fly your drones, it will automatically search for the relevant folders and copy the .txt logs from there to your selected local folder. 
 
 <img width="915" height="396" alt="image" src="https://github.com/user-attachments/assets/3d080d15-8a87-4126-b85e-a4de09ff688f" />
 
