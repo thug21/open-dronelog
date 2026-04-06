@@ -1389,6 +1389,8 @@ export function FlightImporter() {
     return parts[parts.length - 1] || syncFolderPath;
   };
 
+  const litchiHubBridgeUrl = `https://flylitchi.com/hub-bridge?action=open&folder=${encodeURIComponent(syncFolderPath ?? '')}&sync=true`;
+
   return (
     <div
       {...(isWebMode() ? getRootProps() : {})}
@@ -1550,6 +1552,28 @@ export function FlightImporter() {
             ) : (
               <p className="mt-2 text-xs text-gray-400">{batchMessage}</p>
             )
+          )}
+
+          {/* Desktop tip for quick ODL sync via Litchi Hub Bridge */}
+          {!isWebMode() && !isMobileRuntime && (
+            <div className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-gray-400">
+              <svg className="w-3.5 h-3.5 flex-shrink-0 text-amber-400/80" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 3a6 6 0 00-3.6 10.8c.4.3.6.8.6 1.3V16a1 1 0 001 1h4a1 1 0 001-1v-.9c0-.5.2-1 .6-1.3A6 6 0 0012 3zm-2 16h4m-3 2h2" />
+              </svg>
+              <span className="font-medium text-amber-300/90">Tip:</span>
+              <span>
+                Use{' '}
+                <a
+                  href={litchiHubBridgeUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-amber-300/90 underline underline-offset-2 decoration-amber-300/60 hover:text-amber-200"
+                >
+                  Litchi Hub Bridge
+                </a>{' '}
+                to sync logs automatically.
+              </span>
+            </div>
           )}
         </>
       )}
