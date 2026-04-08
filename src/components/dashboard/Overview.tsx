@@ -948,14 +948,12 @@ function ActivityHeatmapCard({
         )}
       />
 
-      <div className="overflow-x-auto">
-        <ActivityHeatmap
-          flightsByDate={filteredByDate}
-          isLight={isLight}
-          dateRange={dateRange}
-          onDateDoubleClick={onDateDoubleClick}
-        />
-      </div>
+      <ActivityHeatmap
+        flightsByDate={filteredByDate}
+        isLight={isLight}
+        dateRange={dateRange}
+        onDateDoubleClick={onDateDoubleClick}
+      />
     </div>
   );
 }
@@ -977,7 +975,8 @@ function ActivityHeatmap({
   const maxWidth = 1170;
   const labelWidth = 28;
   const gapSize = 2;
-  const cellSize = 13; // Increased from 12 for better visibility
+  const cellSize = 13;
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const { grid, months, maxCount, weekCount } = useMemo(() => {
     const pad = (value: number) => String(value).padStart(2, '0');
@@ -1025,10 +1024,13 @@ function ActivityHeatmap({
       weeks.push(week);
     }
 
-    // Extract month labels aligned to week columns
+    // Show most recent weeks at the left edge.
+    const displayedWeeks = [...weeks].reverse();
+
+    // Extract month labels aligned to week columns in displayed order.
     const months: { label: string; col: number }[] = [];
     let lastMonth = -1;
-    weeks.forEach((week, weekIdx) => {
+    displayedWeeks.forEach((week, weekIdx) => {
       const firstValidDay = week.find((d) => d.count >= 0);
       if (firstValidDay) {
         const month = firstValidDay.date.getMonth();
@@ -1042,8 +1044,14 @@ function ActivityHeatmap({
       }
     });
 
-    return { grid: weeks, months, maxCount, weekCount: weeks.length };
+    return { grid: displayedWeeks, months, maxCount, weekCount: displayedWeeks.length };
   }, [flightsByDate, dateRange]);
+
+  useEffect(() => {
+    if (!scrollRef.current) return;
+    // Keep initial viewport at the leftmost edge.
+    scrollRef.current.scrollLeft = 0;
+  }, [weekCount, dateRange?.from?.getTime(), dateRange?.to?.getTime()]);
 
   const getColor = (count: number) => {
     if (count < 0) return 'transparent';
@@ -1063,18 +1071,16 @@ function ActivityHeatmap({
 
   const dayLabels = [t('overview.sun'), t('overview.mon'), t('overview.tue'), t('overview.wed'), t('overview.thu'), t('overview.fri'), t('overview.sat')];
 
-  const colSize = cellSize + gapSize;
-  const contentWidth = weekCount * colSize + labelWidth * 2;
+  const contentWidth = weekCount * cellSize + Math.max(weekCount - 1, 0) * gapSize + labelWidth * 2;
 
   return (
-    <div className="w-full flex justify-center">
-      <div className="w-full flex justify-center overflow-x-auto" style={{ maxWidth: `${maxWidth}px` }}>
-        <div className="flex flex-col" style={{ width: `${contentWidth}px` }}>
+    <div className="w-full overflow-x-auto" ref={scrollRef}>
+      <div className="flex flex-col min-w-max" style={{ width: `${Math.min(maxWidth, contentWidth)}px`, minWidth: `${contentWidth}px` }}>
           {/* Month labels */}
           <div
             className="grid text-[10px] text-gray-500 mb-1"
             style={{
-              gridTemplateColumns: `repeat(${weekCount}, ${colSize}px)`,
+              gridTemplateColumns: `repeat(${weekCount}, ${cellSize}px)`,
               marginLeft: `${labelWidth}px`,
               columnGap: `${gapSize}px`,
               paddingRight: `${labelWidth}px`,
@@ -1105,8 +1111,8 @@ function ActivityHeatmap({
             <div
               className="grid"
               style={{
-                gridTemplateColumns: `repeat(${weekCount}, ${colSize}px)`,
-                gridTemplateRows: `repeat(7, ${colSize}px)`,
+                gridTemplateColumns: `repeat(${weekCount}, ${cellSize}px)`,
+                gridTemplateRows: `repeat(7, ${cellSize}px)`,
                 columnGap: `${gapSize}px`,
                 rowGap: `${gapSize}px`,
               }}
@@ -1159,7 +1165,6 @@ function ActivityHeatmap({
           </div>
         </div>
       </div>
-    </div>
   );
 }
 
