@@ -748,9 +748,26 @@ export function FlightList({
   }, [dateFormatter, dateRange]);
 
   const updateDateAnchor = useCallback(() => {
-    const rect = dateButtonRef.current?.getBoundingClientRect();
+    const trigger = dateButtonRef.current;
+    const rect = trigger?.getBoundingClientRect();
     if (!rect) return;
-    setDateAnchor({ top: rect.bottom + 8, left: rect.left, width: rect.width });
+
+    const sidebarRect = trigger?.closest('aside')?.getBoundingClientRect();
+    const horizontalInset = 8;
+    const sidebarMinWidth = 340;
+    const maxAllowedWidth = Math.max(
+      280,
+      Math.min(
+        sidebarMinWidth - horizontalInset * 2,
+        (sidebarRect?.width ?? window.innerWidth) - horizontalInset * 2,
+      ),
+    );
+    const popoverWidth = Math.min(Math.max(320, rect.width), maxAllowedWidth);
+    const minLeft = (sidebarRect?.left ?? 0) + horizontalInset;
+    const maxLeft = (sidebarRect?.right ?? window.innerWidth) - horizontalInset - popoverWidth;
+    const left = Math.max(minLeft, Math.min(rect.left, maxLeft));
+
+    setDateAnchor({ top: rect.bottom + 8, left, width: popoverWidth });
   }, []);
 
   useEffect(() => {
@@ -2689,7 +2706,7 @@ export function FlightList({
                         style={dateAnchor ? {
                           top: dateAnchor.top,
                           left: dateAnchor.left,
-                          width: Math.max(320, dateAnchor.width),
+                          width: dateAnchor.width,
                         } : undefined}
                         footer={(
                           <div className="mt-2 flex items-center justify-between">
