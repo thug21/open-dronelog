@@ -39,6 +39,7 @@ const SYNC_FOLDER_KEY = 'syncFolderPath';
 const AUTOSCAN_KEY = 'autoscanEnabled';
 const MOBILE_SYNC_URI_KEY = 'mobileSyncFolderUri';
 const DEFAULT_ALLOWED_EXTENSIONS = ['txt', 'csv'];
+const REFRESH_INTERVAL = 10;
 const STARTUP_SYNC_GUARD_PREFIX = 'startupSyncDone:';
 
 // Guard startup auto-sync across component remounts within the same app session.
@@ -506,14 +507,12 @@ export function FlightImporter() {
     
     if (hasPersonalKey) {
       // Optimized path: batch import without cooldown
-      // Refresh flight list every 2 files to show progress
+      // Refresh flight list every 10 files to show progress
       let processed = 0;
       let skipped = 0;
       let duplicates = 0;
       let invalidFiles = 0;
       let blacklisted = 0;
-      const REFRESH_INTERVAL = 2;
-
       for (let index = 0; index < items.length; index += 1) {
         if (cancelRequestedRef.current) break;
         const item = items[index];
@@ -1199,8 +1198,8 @@ export function FlightImporter() {
             const result = await syncSingleFile(filename);
             if (result.success) {
               processed++;
-              // Refresh flight list every 2 files to show progress
-              if (processed % 2 === 0) {
+              // Refresh flight list every 10 files to show progress
+              if (processed % REFRESH_INTERVAL === 0) {
                 const { loadFlights, loadAllTags } = useFlightStore.getState();
                 loadFlights().then(() => loadAllTags());
               }
