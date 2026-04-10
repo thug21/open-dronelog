@@ -1614,6 +1614,14 @@ export function FlightList({
       t('flightList.csvHeaderMaxVel'),
       t('flightList.csvHeaderTakeoffLat'),
       t('flightList.csvHeaderTakeoffLon'),
+      t('flightList.csvHeaderTakeoffBatteryPercent', 'takeoff_battery_percent'),
+      t('flightList.csvHeaderLandingBatteryPercent', 'landing_battery_percent'),
+      t('flightList.csvHeaderTakeoffBatteryTemp', 'takeoff_battery_temp'),
+      t('flightList.csvHeaderLandingBatteryTemp', 'landing_battery_temp'),
+      t('flightList.csvHeaderTakeoffBatteryVoltage', 'takeoff_battery_voltage'),
+      t('flightList.csvHeaderLandingBatteryVoltage', 'landing_battery_voltage'),
+      t('flightList.csvHeaderPhotoCount', 'photo_count'),
+      t('flightList.csvHeaderVideoCount', 'video_count'),
       t('flightList.csvHeaderTags'),
       t('flightList.csvHeaderNotes'),
     ];
@@ -1710,6 +1718,53 @@ export function FlightList({
     // Format tags as semicolon-separated string
     const tagsStr = flight.tags?.map(t => t.tag).join('; ') || '';
 
+    const batterySeries = data.telemetry.battery ?? [];
+    const voltageSeries = data.telemetry.batteryVoltage ?? [];
+    const tempSeries = data.telemetry.batteryTemp ?? [];
+
+    const indexedBattery = batterySeries
+      .map((pct, idx) => ({ pct, idx }))
+      .filter((sample): sample is { pct: number; idx: number } => typeof sample.pct === 'number' && Number.isFinite(sample.pct));
+
+    const nonZeroBattery = indexedBattery.filter((sample) => sample.pct > 0);
+
+    let takeoffSample: { pct: number; idx: number } | null = null;
+    for (const sample of nonZeroBattery) {
+      if (!takeoffSample || sample.pct > takeoffSample.pct) {
+        takeoffSample = sample;
+      }
+    }
+
+    let landingSample: { pct: number; idx: number } | null = null;
+    for (let i = indexedBattery.length - 1; i >= 0; i--) {
+      const sample = indexedBattery[i];
+      if (sample.pct > 0) {
+        landingSample = sample;
+        break;
+      }
+    }
+
+    const getVoltageAt = (idx: number | null): number | null => {
+      if (idx == null || idx < 0 || idx >= voltageSeries.length) return null;
+      const value = voltageSeries[idx];
+      return (typeof value === 'number' && Number.isFinite(value) && value > 0) ? value : null;
+    };
+
+    const getTempAt = (idx: number | null): number | null => {
+      if (idx == null || idx < 0 || idx >= tempSeries.length) return null;
+      const value = tempSeries[idx];
+      if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) < 1e-6) return null;
+      if (unitPrefs.temperature === 'imperial') return (value * 9 / 5) + 32;
+      return value;
+    };
+
+    const takeoffBatteryPercent = takeoffSample?.pct ?? null;
+    const landingBatteryPercent = landingSample?.pct ?? null;
+    const takeoffBatteryVoltage = getVoltageAt(takeoffSample?.idx ?? null);
+    const landingBatteryVoltage = getVoltageAt(landingSample?.idx ?? null);
+    const takeoffBatteryTemp = getTempAt(takeoffSample?.idx ?? null);
+    const landingBatteryTemp = getTempAt(landingSample?.idx ?? null);
+
     return [
       summaryEscapeCsv(aircraftName),
       summaryEscapeCsv(flight.droneSerial || ''),
@@ -1724,6 +1779,14 @@ export function FlightList({
       summaryEscapeCsv(flight.maxSpeed != null ? flight.maxSpeed.toFixed(2) : ''),
       summaryEscapeCsv(takeoffLat != null ? takeoffLat.toFixed(7) : ''),
       summaryEscapeCsv(takeoffLon != null ? takeoffLon.toFixed(7) : ''),
+      summaryEscapeCsv(takeoffBatteryPercent != null ? String(Math.round(takeoffBatteryPercent)) : ''),
+      summaryEscapeCsv(landingBatteryPercent != null ? String(Math.round(landingBatteryPercent)) : ''),
+      summaryEscapeCsv(takeoffBatteryTemp != null ? takeoffBatteryTemp.toFixed(1) : ''),
+      summaryEscapeCsv(landingBatteryTemp != null ? landingBatteryTemp.toFixed(1) : ''),
+      summaryEscapeCsv(takeoffBatteryVoltage != null ? takeoffBatteryVoltage.toFixed(2) : ''),
+      summaryEscapeCsv(landingBatteryVoltage != null ? landingBatteryVoltage.toFixed(2) : ''),
+      summaryEscapeCsv(flight.photoCount != null ? String(flight.photoCount) : ''),
+      summaryEscapeCsv(flight.videoCount != null ? String(flight.videoCount) : ''),
       summaryEscapeCsv(tagsStr),
       summaryEscapeCsv(flight.notes || ''),
     ].join(',');
