@@ -468,6 +468,7 @@
     "keepUploadedFiles": "Manter arquivos enviados",
     "keepUploadedDesc": "Salvar arquivos de registro de voo importados em uma pasta local como backup.",
     "folder": "Pasta:",
+    "uploadFolderAccessDenied": "Acesso negado ao local selecionado: {{error}} Selecione outro local.",
     "backupDatabase": "Backup do Banco de Dados",
     "importBackup": "Importar Backup",
     "exporting": "Exportando…",

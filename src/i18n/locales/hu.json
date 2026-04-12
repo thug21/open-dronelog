@@ -478,6 +478,7 @@
     "keepUploadedFiles": "Feltöltött Fájlok Megtartása",
     "keepUploadedDesc": "Mentse az importált repülési naplófájlokat egy helyi mappába a biztonsági mentéshez.",
     "folder": "Mappa:",
+    "uploadFolderAccessDenied": "A kijelölt helyhez való hozzáférés megtagadva: {{error}} Kérjük, válasszon másik helyet.",
     "backupDatabase": "Adatbázis Biztonsági Mentése",
     "importBackup": "Biztonsági Mentés Importálása",
     "exporting": "Exportálás…",

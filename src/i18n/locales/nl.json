@@ -475,6 +475,7 @@
     "keepUploadedFiles": "Geüploade bestanden bewaren",
     "keepUploadedDesc": "Sla geïmporteerde vluchtlogbestanden op in een lokale map als back-up.",
     "folder": "Map:",
+    "uploadFolderAccessDenied": "Toegang geweigerd tot de geselecteerde locatie: {{error}} Selecteer een andere locatie.",
     "backupDatabase": "Database Back-up",
     "importBackup": "Back-up Importeren",
     "exporting": "Exporteren…",

@@ -1118,6 +1118,41 @@
         pub folder_path: String,
     }
 
+    fn validate_upload_folder_writable(folder: &PathBuf) -> Result<(), String> {
+        std::fs::create_dir_all(folder)
+            .map_err(|e| format!("Failed to create/access folder: {}", e))?;
+
+        if !folder.is_dir() {
+            return Err("Selected path is not a directory".to_string());
+        }
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let test_file = folder.join(format!(
+            ".open-dronelog-write-test-{}-{}.tmp",
+            std::process::id(),
+            nonce
+        ));
+
+        let payload = b"open-dronelog-write-check";
+
+        std::fs::write(&test_file, payload)
+            .map_err(|e| format!("Failed to write test file: {}", e))?;
+
+        let read_back = std::fs::read(&test_file)
+            .map_err(|e| format!("Failed to read back test file: {}", e))?;
+
+        let _ = std::fs::remove_file(&test_file);
+
+        if read_back != payload {
+            return Err("Write verification failed (written content mismatch)".to_string());
+        }
+
+        Ok(())
+    }
+
     #[tauri::command]
     pub async fn get_keep_upload_settings(state: State<'_, AppState>) -> Result<KeepUploadSettings, String> {
         let config_path = state.config_path();
@@ -1146,6 +1181,16 @@
         let config_path = state.config_path();
         let default_folder = state.default_upload_folder().to_string_lossy().to_string();
         let actual_folder = folder_path.unwrap_or(default_folder);
+
+        if enabled {
+            let candidate = PathBuf::from(&actual_folder);
+            validate_upload_folder_writable(&candidate).map_err(|e| {
+                format!(
+                    "Access denied to selected location '{}': {}. Please select a different location.",
+                    actual_folder, e
+                )
+            })?;
+        }
         
         let mut config: serde_json::Value = if config_path.exists() {
             let content = std::fs::read_to_string(&config_path).unwrap_or_default();

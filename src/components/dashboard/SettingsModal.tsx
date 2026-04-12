@@ -1627,9 +1627,17 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                       <button
                         type="button"
                         onClick={async () => {
-                          const newEnabled = !keepUploadSettings.enabled;
-                          const result = await setKeepUploadSettings(newEnabled, keepUploadSettings.folder_path);
-                          if (result) setKeepUploadSettingsState(result);
+                          try {
+                            const newEnabled = !keepUploadSettings.enabled;
+                            const result = await setKeepUploadSettings(newEnabled, keepUploadSettings.folder_path);
+                            if (result) setKeepUploadSettingsState(result);
+                          } catch (e) {
+                            const details = e instanceof Error ? e.message : String(e);
+                            setMessage({
+                              type: 'error',
+                              text: t('settings.uploadFolderAccessDenied', { error: details }),
+                            });
+                          }
                         }}
                         className="flex items-center gap-3 text-[0.85rem] text-gray-300"
                         aria-pressed={keepUploadSettings.enabled}
@@ -1659,8 +1667,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                               defaultPath: keepUploadSettings.folder_path,
                             });
                             if (selected && typeof selected === 'string') {
-                              const result = await setKeepUploadSettings(keepUploadSettings.enabled, selected);
-                              if (result) setKeepUploadSettingsState(result);
+                              try {
+                                const result = await setKeepUploadSettings(keepUploadSettings.enabled, selected);
+                                if (result) setKeepUploadSettingsState(result);
+                              } catch (e) {
+                                const details = e instanceof Error ? e.message : String(e);
+                                setMessage({
+                                  type: 'error',
+                                  text: t('settings.uploadFolderAccessDenied', { error: details }),
+                                });
+                              }
                             }
                           } catch (e) {
                             console.error('Failed to select folder:', e);

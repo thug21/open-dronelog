@@ -473,6 +473,7 @@
     "keepUploadedFiles": "Zachowaj przesłane pliki",
     "keepUploadedDesc": "Zapisuj zaimportowane pliki logów lotów w lokalnym folderze jako kopię zapasową.",
     "folder": "Folder:",
+    "uploadFolderAccessDenied": "Odmowa dostępu do wybranej lokalizacji: {{error}} Wybierz inną lokalizację.",
     "backupDatabase": "Kopia Zapasowa Bazy Danych",
     "importBackup": "Importuj Kopię Zapasową",
     "exporting": "Eksportowanie…",

@@ -475,6 +475,7 @@
     "keepUploadedFiles": "업로드된 파일 유지",
     "keepUploadedDesc": "가져온 비행 로그 파일을 백업용으로 로컬 폴더에 저장합니다.",
     "folder": "폴더:",
+    "uploadFolderAccessDenied": "선택한 위치에 접근할 수 없습니다: {{error}} 다른 위치를 선택해 주세요.",
     "backupDatabase": "데이터베이스 백업",
     "importBackup": "백업 가져오기",
     "exporting": "내보내는 중…",

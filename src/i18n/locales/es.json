@@ -475,6 +475,7 @@
     "keepUploadedFiles": "Conservar archivos subidos",
     "keepUploadedDesc": "Guardar los archivos de registro de vuelo importados en una carpeta local como respaldo.",
     "folder": "Carpeta:",
+    "uploadFolderAccessDenied": "Acceso denegado a la ubicación seleccionada: {{error}} Seleccione una ubicación diferente.",
     "backupDatabase": "Respaldar Base de Datos",
     "importBackup": "Importar Respaldo",
     "exporting": "Exportando…",

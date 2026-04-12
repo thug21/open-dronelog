@@ -475,6 +475,7 @@
     "keepUploadedFiles": "アップロードファイルを保持",
     "keepUploadedDesc": "インポートしたフライトログファイルをバックアップ用にローカルフォルダに保存します。",
     "folder": "フォルダ:",
+    "uploadFolderAccessDenied": "選択した場所へのアクセスが拒否されました: {{error}} 別の場所を選択してください。",
     "backupDatabase": "データベースのバックアップ",
     "importBackup": "バックアップをインポート",
     "exporting": "エクスポート中…",

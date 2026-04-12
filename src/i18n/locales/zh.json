@@ -475,6 +475,7 @@
     "keepUploadedFiles": "保留上传的文件",
     "keepUploadedDesc": "将导入的飞行日志文件保存到本地文件夹进行备份。",
     "folder": "文件夹：",
+    "uploadFolderAccessDenied": "无法访问所选位置：{{error}} 请选择其他位置。",
     "backupDatabase": "备份数据库",
     "importBackup": "导入备份",
     "exporting": "导出中…",

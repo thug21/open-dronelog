@@ -475,6 +475,7 @@
     "keepUploadedFiles": "Hochgeladene Dateien behalten",
     "keepUploadedDesc": "Importierte Flugprotokolldateien zur Sicherung in einem lokalen Ordner speichern.",
     "folder": "Ordner:",
+    "uploadFolderAccessDenied": "Zugriff auf den ausgewählten Speicherort verweigert: {{error}} Bitte wählen Sie einen anderen Speicherort.",
     "backupDatabase": "Datenbank sichern",
     "importBackup": "Backup importieren",
     "exporting": "Exportiert…",

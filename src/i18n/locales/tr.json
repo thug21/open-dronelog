@@ -478,6 +478,7 @@
     "keepUploadedFiles": "Yüklenen dosyaları saklayın",
     "keepUploadedDesc": "İçe aktarılan uçuş kayıt dosyalarını yedeklemek için yerel bir klasöre kaydedin.",
     "folder": "Klasör:",
+    "uploadFolderAccessDenied": "Seçilen konuma erişim reddedildi: {{error}} Lütfen farklı bir konum seçin.",
     "backupDatabase": "Yedekleme Veritabanı",
     "importBackup": "Yedeklemeyi İçe Aktar",
     "exporting": "Dışa aktarma…",

@@ -475,6 +475,7 @@
     "keepUploadedFiles": "Conserver les fichiers importés",
     "keepUploadedDesc": "Sauvegarder les fichiers de journal de vol importés dans un dossier local.",
     "folder": "Dossier :",
+    "uploadFolderAccessDenied": "Accès refusé à l'emplacement sélectionné : {{error}} Veuillez sélectionner un autre emplacement.",
     "backupDatabase": "Sauvegarder la base de données",
     "importBackup": "Importer une sauvegarde",
     "exporting": "Exportation…",

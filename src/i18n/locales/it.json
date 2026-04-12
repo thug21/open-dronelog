@@ -475,6 +475,7 @@
     "keepUploadedFiles": "Conserva file caricati",
     "keepUploadedDesc": "Salva i file di registro di volo importati in una cartella locale per il backup.",
     "folder": "Cartella:",
+    "uploadFolderAccessDenied": "Accesso negato al percorso selezionato: {{error}} Seleziona un percorso diverso.",
     "backupDatabase": "Backup Database",
     "importBackup": "Importa Backup",
     "exporting": "Esportazione…",
